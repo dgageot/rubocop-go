@@ -1,0 +1,7 @@
+cops:
+  Lint/OsExit:
+    enabled: true
+  Style/ErrorNaming:
+    enabled: true
+  Style/EmptyFunc:
+    enabled: true
