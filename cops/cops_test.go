@@ -11,15 +11,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// pass parses src and returns a *cop.Pass for it.
-func pass(t *testing.T, filename, src string) *cop.Pass {
+// run parses src and runs the cop on it, returning collected offenses.
+func run(t *testing.T, c cop.Cop, filename, src string) []cop.Offense {
 	t.Helper()
 
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, filename, src, 0)
 	require.NoError(t, err)
 
-	return &cop.Pass{FileSet: fset, File: file}
+	p := &cop.Pass{Cop: c, FileSet: fset, File: file}
+	c.Check(p)
+	return p.Offenses()
 }
 
 func TestLintOsExit_InHelper(t *testing.T) {
@@ -31,8 +33,7 @@ func helper() {
 	os.Exit(1)
 }
 `
-	c := &cops.LintOsExit{}
-	offenses := c.Check(pass(t, "sample.go", src))
+	offenses := run(t, &cops.LintOsExit{}, "sample.go", src)
 
 	require.Len(t, offenses, 1)
 	assert.Equal(t, "Lint/OsExit", offenses[0].CopName)
@@ -48,9 +49,7 @@ func main() {
 	os.Exit(0)
 }
 `
-	c := &cops.LintOsExit{}
-	offenses := c.Check(pass(t, "main.go", src))
-
+	offenses := run(t, &cops.LintOsExit{}, "main.go", src)
 	assert.Empty(t, offenses)
 }
 
@@ -64,8 +63,7 @@ func caller() {
 	_ = e
 }
 `
-	c := &cops.StyleErrorNaming{}
-	offenses := c.Check(pass(t, "sample.go", src))
+	offenses := run(t, &cops.StyleErrorNaming{}, "sample.go", src)
 
 	require.Len(t, offenses, 1)
 	assert.Equal(t, "Style/ErrorNaming", offenses[0].CopName)
@@ -82,9 +80,7 @@ func caller() {
 	_ = err
 }
 `
-	c := &cops.StyleErrorNaming{}
-	offenses := c.Check(pass(t, "sample.go", src))
-
+	offenses := run(t, &cops.StyleErrorNaming{}, "sample.go", src)
 	assert.Empty(t, offenses)
 }
 
@@ -94,8 +90,7 @@ func TestStyleEmptyFunc_EmptyBody(t *testing.T) {
 func doNothing() {
 }
 `
-	c := &cops.StyleEmptyFunc{}
-	offenses := c.Check(pass(t, "sample.go", src))
+	offenses := run(t, &cops.StyleEmptyFunc{}, "sample.go", src)
 
 	require.Len(t, offenses, 1)
 	assert.Equal(t, "Style/EmptyFunc", offenses[0].CopName)
@@ -112,8 +107,7 @@ func Hello() {
 	fmt.Printf("value: %d", 42)
 }
 `
-	c := &cops.LintFmtPrint{}
-	offenses := c.Check(pass(t, "mylib.go", src))
+	offenses := run(t, &cops.LintFmtPrint{}, "mylib.go", src)
 
 	require.Len(t, offenses, 2)
 	assert.Equal(t, "Lint/FmtPrint", offenses[0].CopName)
@@ -130,9 +124,7 @@ func main() {
 	fmt.Println("hello")
 }
 `
-	c := &cops.LintFmtPrint{}
-	offenses := c.Check(pass(t, "main.go", src))
-
+	offenses := run(t, &cops.LintFmtPrint{}, "main.go", src)
 	assert.Empty(t, offenses)
 }
 
@@ -145,9 +137,7 @@ func Wrap() error {
 	return fmt.Errorf("bad: %w", nil)
 }
 `
-	c := &cops.LintFmtPrint{}
-	offenses := c.Check(pass(t, "mylib.go", src))
-
+	offenses := run(t, &cops.LintFmtPrint{}, "mylib.go", src)
 	assert.Empty(t, offenses)
 }
 
@@ -158,8 +148,6 @@ func doSomething() {
 	println("hello")
 }
 `
-	c := &cops.StyleEmptyFunc{}
-	offenses := c.Check(pass(t, "sample.go", src))
-
+	offenses := run(t, &cops.StyleEmptyFunc{}, "sample.go", src)
 	assert.Empty(t, offenses)
 }

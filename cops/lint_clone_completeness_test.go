@@ -15,9 +15,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// typedPass writes src to a temp file, parses and type-checks it, then
-// returns a *cop.Pass populated with type information.
-func typedPass(t *testing.T, src string) *cop.Pass {
+// runTyped writes src to a temp file, parses and type-checks it, then runs
+// the cop and returns collected offenses.
+func runTyped(t *testing.T, c cop.Cop, src string) []cop.Offense {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -37,7 +37,9 @@ func typedPass(t *testing.T, src string) *cop.Pass {
 	cfg := &types.Config{Error: func(error) {}}
 	pkg, _ := cfg.Check(dir, fset, []*ast.File{file}, info)
 
-	return &cop.Pass{FileSet: fset, File: file, Info: info, Package: pkg}
+	p := &cop.Pass{Cop: c, FileSet: fset, File: file, Info: info, Package: pkg}
+	c.Check(p)
+	return p.Offenses()
 }
 
 func TestLintCloneCompleteness_MissingField(t *testing.T) {
@@ -56,8 +58,7 @@ func (c *Config) Clone() *Config {
 	}
 }
 `
-	c := &cops.LintCloneCompleteness{}
-	offenses := c.Check(typedPass(t, src))
+	offenses := runTyped(t, &cops.LintCloneCompleteness{}, src)
 
 	require.Len(t, offenses, 2)
 	assert.Contains(t, offenses[0].Message, "Items")
@@ -84,9 +85,7 @@ func (c *Config) Clone() *Config {
 	}
 }
 `
-	c := &cops.LintCloneCompleteness{}
-	offenses := c.Check(typedPass(t, src))
-
+	offenses := runTyped(t, &cops.LintCloneCompleteness{}, src)
 	assert.Empty(t, offenses)
 }
 
@@ -109,8 +108,7 @@ func (o *Outer) Clone() *Outer {
 	}
 }
 `
-	c := &cops.LintCloneCompleteness{}
-	offenses := c.Check(typedPass(t, src))
+	offenses := runTyped(t, &cops.LintCloneCompleteness{}, src)
 
 	require.Len(t, offenses, 1)
 	assert.Contains(t, offenses[0].Message, "Inner")
@@ -135,8 +133,7 @@ func (e *Extended) Clone() *Extended {
 	}
 }
 `
-	c := &cops.LintCloneCompleteness{}
-	offenses := c.Check(typedPass(t, src))
+	offenses := runTyped(t, &cops.LintCloneCompleteness{}, src)
 
 	require.Len(t, offenses, 1)
 	assert.Contains(t, offenses[0].Message, "Tags")
@@ -153,9 +150,7 @@ func (c *Config) String() string {
 	return "config"
 }
 `
-	c := &cops.LintCloneCompleteness{}
-	offenses := c.Check(typedPass(t, src))
-
+	offenses := runTyped(t, &cops.LintCloneCompleteness{}, src)
 	assert.Empty(t, offenses)
 }
 
@@ -171,8 +166,6 @@ func (p *Point) Clone() *Point {
 	return &Point{X: p.X, Y: p.Y}
 }
 `
-	c := &cops.LintCloneCompleteness{}
-	offenses := c.Check(typedPass(t, src))
-
+	offenses := runTyped(t, &cops.LintCloneCompleteness{}, src)
 	assert.Empty(t, offenses)
 }

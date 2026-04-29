@@ -9,6 +9,7 @@
 package cop
 
 import (
+	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
@@ -67,10 +68,35 @@ type Offense struct {
 // for cops that opt into type information by implementing the TypeAware
 // interface; otherwise they are nil.
 type Pass struct {
+	Cop     Cop
 	FileSet *token.FileSet
 	File    *ast.File
 	Info    *types.Info
 	Package *types.Package
+
+	offenses []Offense
+}
+
+// Report records an offense covering the source span of the AST node n.
+// The message is formatted with fmt.Sprintf semantics.
+func (p *Pass) Report(n ast.Node, format string, args ...any) {
+	p.ReportAt(n.Pos(), n.End(), format, args...)
+}
+
+// ReportAt records an offense covering the half-open [pos, end) range.
+// Use it when you want a span narrower or wider than an ast.Node naturally
+// covers.
+func (p *Pass) ReportAt(pos, end token.Pos, format string, args ...any) {
+	msg := format
+	if len(args) > 0 {
+		msg = fmt.Sprintf(format, args...)
+	}
+	p.offenses = append(p.offenses, NewOffenseAt(p.Cop, p.FileSet, pos, end, msg))
+}
+
+// Offenses returns the offenses accumulated so far on this pass.
+func (p *Pass) Offenses() []Offense {
+	return p.offenses
 }
 
 // Filename returns the path of the file being inspected.
@@ -111,8 +137,8 @@ type Cop interface {
 	// Severity returns the default severity for offenses reported by this cop.
 	Severity() Severity
 
-	// Check inspects a file and returns any offenses found.
-	Check(p *Pass) []Offense
+	// Check inspects a file and reports offenses via p.Report.
+	Check(p *Pass)
 }
 
 // TypeAware is an optional interface that a Cop can implement to request

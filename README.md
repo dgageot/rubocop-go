@@ -68,8 +68,7 @@ func (c MyCop) Name() string        { return "Style/MyCop" }
 func (c MyCop) Description() string { return "Checks something useful" }
 func (c MyCop) Severity() cop.Severity { return cop.Convention }
 
-func (c MyCop) Check(p *cop.Pass) []cop.Offense {
-	// Inspect the AST and return offenses
-	return nil
+func (c MyCop) Check(p *cop.Pass) {
+	// Inspect p.File and call p.Report(node, format, args...) on offenses.
 }
 ```

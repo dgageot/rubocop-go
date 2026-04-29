@@ -23,12 +23,10 @@ func (*LintCloneCompleteness) Severity() cop.Severity { return cop.Error }
 func (*LintCloneCompleteness) NeedsTypes() bool { return true }
 
 // Check inspects Clone() methods for missing field copies.
-func (c *LintCloneCompleteness) Check(p *cop.Pass) []cop.Offense {
+func (c *LintCloneCompleteness) Check(p *cop.Pass) {
 	if p.Info == nil {
-		return nil
+		return
 	}
-
-	var offenses []cop.Offense
 
 	for _, decl := range p.File.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
@@ -54,13 +52,10 @@ func (c *LintCloneCompleteness) Check(p *cop.Pass) []cop.Offense {
 
 		for _, name := range needsCopy {
 			if !referenced[name] {
-				offenses = append(offenses, cop.NewOffense(c, p.FileSet, fn.Name,
-					"Clone() does not copy field '"+name+"' (pointer/slice/map)"))
+				p.Report(fn.Name, "Clone() does not copy field '%s' (pointer/slice/map)", name)
 			}
 		}
 	}
-
-	return offenses
 }
 
 // resolveRecvStruct returns the *types.Struct underlying the receiver of fn,

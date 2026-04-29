@@ -22,13 +22,11 @@ var fmtPrintFuncs = map[string]bool{
 	"Printf":  true,
 }
 
-func (c *LintFmtPrint) Check(p *cop.Pass) []cop.Offense {
+func (c *LintFmtPrint) Check(p *cop.Pass) {
 	// Allow fmt.Print in main packages — that's often intentional CLI output.
 	if p.IsMain() {
-		return nil
+		return
 	}
-
-	var offenses []cop.Offense
 
 	ast.Inspect(p.File, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
@@ -47,12 +45,9 @@ func (c *LintFmtPrint) Check(p *cop.Pass) []cop.Offense {
 		}
 
 		if ident.Name == "fmt" && fmtPrintFuncs[sel.Sel.Name] {
-			offenses = append(offenses, cop.NewOffense(c, p.FileSet, call,
-				"fmt."+sel.Sel.Name+" in library code — use a logger instead"))
+			p.Report(call, "fmt.%s in library code — use a logger instead", sel.Sel.Name)
 		}
 
 		return true
 	})
-
-	return offenses
 }

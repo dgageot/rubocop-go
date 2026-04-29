@@ -16,9 +16,7 @@ func (*StyleEmptyFunc) Name() string           { return "Style/EmptyFunc" }
 func (*StyleEmptyFunc) Description() string    { return "Avoid empty function bodies" }
 func (*StyleEmptyFunc) Severity() cop.Severity { return cop.Convention }
 
-func (c *StyleEmptyFunc) Check(p *cop.Pass) []cop.Offense {
-	var offenses []cop.Offense
-
+func (c *StyleEmptyFunc) Check(p *cop.Pass) {
 	ast.Inspect(p.File, func(n ast.Node) bool {
 		fn, ok := n.(*ast.FuncDecl)
 		if !ok {
@@ -32,12 +30,10 @@ func (c *StyleEmptyFunc) Check(p *cop.Pass) []cop.Offense {
 
 		// Skip functions that only return (interface stubs).
 		if len(fn.Body.List) == 0 {
-			offenses = append(offenses, cop.NewOffenseAt(c, p.FileSet, fn.Pos(), fn.Name.End(),
-				"function '"+fn.Name.Name+"' has an empty body"))
+			p.ReportAt(fn.Pos(), fn.Name.End(),
+				"function '%s' has an empty body", fn.Name.Name)
 		}
 
 		return true
 	})
-
-	return offenses
 }

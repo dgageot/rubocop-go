@@ -16,9 +16,7 @@ func (*LintOsExit) Name() string           { return "Lint/OsExit" }
 func (*LintOsExit) Description() string    { return "Avoid os.Exit outside of main()" }
 func (*LintOsExit) Severity() cop.Severity { return cop.Warning }
 
-func (c *LintOsExit) Check(p *cop.Pass) []cop.Offense {
-	var offenses []cop.Offense
-
+func (c *LintOsExit) Check(p *cop.Pass) {
 	for _, decl := range p.File.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok {
@@ -47,12 +45,10 @@ func (c *LintOsExit) Check(p *cop.Pass) []cop.Offense {
 			}
 
 			if ident.Name == "os" && sel.Sel.Name == "Exit" {
-				offenses = append(offenses, cop.NewOffense(c, p.FileSet, call, "avoid os.Exit outside of main()"))
+				p.Report(call, "avoid os.Exit outside of main()")
 			}
 
 			return true
 		})
 	}
-
-	return offenses
 }
