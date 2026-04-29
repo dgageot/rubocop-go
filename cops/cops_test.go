@@ -1,28 +1,13 @@
 package cops_test
 
 import (
-	"go/parser"
-	"go/token"
 	"testing"
 
-	"github.com/dgageot/rubocop-go/cop"
+	"github.com/dgageot/rubocop-go/coptest"
 	"github.com/dgageot/rubocop-go/cops"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// run parses src and runs the cop on it, returning collected offenses.
-func run(t *testing.T, c cop.Cop, filename, src string) []cop.Offense {
-	t.Helper()
-
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, filename, src, 0)
-	require.NoError(t, err)
-
-	p := &cop.Pass{Cop: c, FileSet: fset, File: file}
-	c.Check(p)
-	return p.Offenses()
-}
 
 func TestLintOsExit_InHelper(t *testing.T) {
 	src := `package sample
@@ -33,7 +18,7 @@ func helper() {
 	os.Exit(1)
 }
 `
-	offenses := run(t, cops.NewLintOsExit(), "sample.go", src)
+	offenses := coptest.Run(t, cops.NewLintOsExit(), src)
 
 	require.Len(t, offenses, 1)
 	assert.Equal(t, "Lint/OsExit", offenses[0].CopName)
@@ -49,7 +34,7 @@ func main() {
 	os.Exit(0)
 }
 `
-	offenses := run(t, cops.NewLintOsExit(), "main.go", src)
+	offenses := coptest.Run(t, cops.NewLintOsExit(), src)
 	assert.Empty(t, offenses)
 }
 
@@ -63,7 +48,7 @@ func caller() {
 	_ = e
 }
 `
-	offenses := run(t, cops.NewStyleErrorNaming(), "sample.go", src)
+	offenses := coptest.Run(t, cops.NewStyleErrorNaming(), src)
 
 	require.Len(t, offenses, 1)
 	assert.Equal(t, "Style/ErrorNaming", offenses[0].CopName)
@@ -80,7 +65,7 @@ func caller() {
 	_ = err
 }
 `
-	offenses := run(t, cops.NewStyleErrorNaming(), "sample.go", src)
+	offenses := coptest.Run(t, cops.NewStyleErrorNaming(), src)
 	assert.Empty(t, offenses)
 }
 
@@ -90,7 +75,7 @@ func TestStyleEmptyFunc_EmptyBody(t *testing.T) {
 func doNothing() {
 }
 `
-	offenses := run(t, cops.NewStyleEmptyFunc(), "sample.go", src)
+	offenses := coptest.Run(t, cops.NewStyleEmptyFunc(), src)
 
 	require.Len(t, offenses, 1)
 	assert.Equal(t, "Style/EmptyFunc", offenses[0].CopName)
@@ -107,7 +92,7 @@ func Hello() {
 	fmt.Printf("value: %d", 42)
 }
 `
-	offenses := run(t, cops.NewLintFmtPrint(), "mylib.go", src)
+	offenses := coptest.Run(t, cops.NewLintFmtPrint(), src)
 
 	require.Len(t, offenses, 2)
 	assert.Equal(t, "Lint/FmtPrint", offenses[0].CopName)
@@ -124,7 +109,7 @@ func main() {
 	fmt.Println("hello")
 }
 `
-	offenses := run(t, cops.NewLintFmtPrint(), "main.go", src)
+	offenses := coptest.Run(t, cops.NewLintFmtPrint(), src)
 	assert.Empty(t, offenses)
 }
 
@@ -137,7 +122,7 @@ func Wrap() error {
 	return fmt.Errorf("bad: %w", nil)
 }
 `
-	offenses := run(t, cops.NewLintFmtPrint(), "mylib.go", src)
+	offenses := coptest.Run(t, cops.NewLintFmtPrint(), src)
 	assert.Empty(t, offenses)
 }
 
@@ -148,6 +133,6 @@ func doSomething() {
 	println("hello")
 }
 `
-	offenses := run(t, cops.NewStyleEmptyFunc(), "sample.go", src)
+	offenses := coptest.Run(t, cops.NewStyleEmptyFunc(), src)
 	assert.Empty(t, offenses)
 }

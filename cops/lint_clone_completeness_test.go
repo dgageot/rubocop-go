@@ -1,46 +1,13 @@
 package cops_test
 
 import (
-	"go/ast"
-	"go/parser"
-	"go/token"
-	"go/types"
-	"os"
-	"path/filepath"
 	"testing"
 
-	"github.com/dgageot/rubocop-go/cop"
+	"github.com/dgageot/rubocop-go/coptest"
 	"github.com/dgageot/rubocop-go/cops"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// runTyped writes src to a temp file, parses and type-checks it, then runs
-// the cop and returns collected offenses.
-func runTyped(t *testing.T, c cop.Cop, src string) []cop.Offense {
-	t.Helper()
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "sample.go")
-	require.NoError(t, os.WriteFile(path, []byte(src), 0o644))
-
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
-	require.NoError(t, err)
-
-	info := &types.Info{
-		Types: make(map[ast.Expr]types.TypeAndValue),
-		Defs:  make(map[*ast.Ident]types.Object),
-		Uses:  make(map[*ast.Ident]types.Object),
-	}
-
-	cfg := &types.Config{Error: func(error) {}}
-	pkg, _ := cfg.Check(dir, fset, []*ast.File{file}, info)
-
-	p := &cop.Pass{Cop: c, FileSet: fset, File: file, Info: info, Package: pkg}
-	c.Check(p)
-	return p.Offenses()
-}
 
 func TestLintCloneCompleteness_MissingField(t *testing.T) {
 	src := `package sample
@@ -58,7 +25,7 @@ func (c *Config) Clone() *Config {
 	}
 }
 `
-	offenses := runTyped(t, cops.NewLintCloneCompleteness(), src)
+	offenses := coptest.RunTyped(t, cops.NewLintCloneCompleteness(), src)
 
 	require.Len(t, offenses, 2)
 	assert.Contains(t, offenses[0].Message, "Items")
@@ -85,7 +52,7 @@ func (c *Config) Clone() *Config {
 	}
 }
 `
-	offenses := runTyped(t, cops.NewLintCloneCompleteness(), src)
+	offenses := coptest.RunTyped(t, cops.NewLintCloneCompleteness(), src)
 	assert.Empty(t, offenses)
 }
 
@@ -108,7 +75,7 @@ func (o *Outer) Clone() *Outer {
 	}
 }
 `
-	offenses := runTyped(t, cops.NewLintCloneCompleteness(), src)
+	offenses := coptest.RunTyped(t, cops.NewLintCloneCompleteness(), src)
 
 	require.Len(t, offenses, 1)
 	assert.Contains(t, offenses[0].Message, "Inner")
@@ -133,7 +100,7 @@ func (e *Extended) Clone() *Extended {
 	}
 }
 `
-	offenses := runTyped(t, cops.NewLintCloneCompleteness(), src)
+	offenses := coptest.RunTyped(t, cops.NewLintCloneCompleteness(), src)
 
 	require.Len(t, offenses, 1)
 	assert.Contains(t, offenses[0].Message, "Tags")
@@ -150,7 +117,7 @@ func (c *Config) String() string {
 	return "config"
 }
 `
-	offenses := runTyped(t, cops.NewLintCloneCompleteness(), src)
+	offenses := coptest.RunTyped(t, cops.NewLintCloneCompleteness(), src)
 	assert.Empty(t, offenses)
 }
 
@@ -166,6 +133,6 @@ func (p *Point) Clone() *Point {
 	return &Point{X: p.X, Y: p.Y}
 }
 `
-	offenses := runTyped(t, cops.NewLintCloneCompleteness(), src)
+	offenses := coptest.RunTyped(t, cops.NewLintCloneCompleteness(), src)
 	assert.Empty(t, offenses)
 }
