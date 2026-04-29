@@ -6,10 +6,6 @@ A Go source code analyzer inspired by [RuboCop](https://rubocop.org/). The goal 
 
 Each cop is a simple Go struct that implements the `cop.Cop` interface: give it a name, a description, a severity, and a `Check` function that inspects an AST file and reports offenses. That's it.
 
-For cops that need type information, implement the optional `cop.TypeAware`
-interface (a `NeedsTypes() bool` method that returns true). The runner will
-then populate `p.Info` and `p.Package` on the `*cop.Pass`.
-
 ## Built-in cops
 
 | Cop | Description |
@@ -47,30 +43,66 @@ cops:
 
 ## Writing a custom cop
 
-1. Create a struct implementing `cop.Cop`
-2. Register it in an `init()` function with `cop.Register`
-3. Import its package from `cops/register.go`
+There are two ways to ship a cop, depending on whether you want to use
+rubocop-go as a CLI or embed it in your own program.
+
+### As a library (recommended for project-specific cops)
+
+Assemble your own slice of cops and pass them to `runner.New`. No globals,
+no init order:
 
 ```go
-package cops
+package main
 
 import (
+	"os"
+
+	"github.com/dgageot/rubocop-go/config"
 	"github.com/dgageot/rubocop-go/cop"
+	"github.com/dgageot/rubocop-go/cops"
+	"github.com/dgageot/rubocop-go/runner"
 )
 
-func init() {
-	cop.Register(&MyCop{Meta: cop.Meta{
-		CopName:     "Style/MyCop",
-		CopDesc:     "Checks something useful",
-		CopSeverity: cop.Convention,
-	}})
+func main() {
+	mine := []cop.Cop{
+		cops.NewLintOsExit(),
+		&MyCop{Meta: cop.Meta{
+			CopName:     "Style/MyCop",
+			CopDesc:     "Checks something useful",
+			CopSeverity: cop.Convention,
+		}},
+	}
+
+	r := runner.New(mine, config.DefaultConfig(), os.Stdout)
+	count, _ := r.Run([]string{"."})
+	if count > 0 {
+		os.Exit(1)
+	}
 }
 
-type MyCop struct {
-	cop.Meta
-}
+type MyCop struct{ cop.Meta }
 
-func (c MyCop) Check(p *cop.Pass) {
+func (c *MyCop) Check(p *cop.Pass) {
 	// Inspect p.File and call p.Report(node, format, args...) on offenses.
 }
 ```
+
+See `examples/embed` for a runnable version of this pattern.
+
+### Plugged into the bundled CLI
+
+If you want your cop to ship inside the bundled `rubocop-go` CLI, add it to
+the `cops/` package and register it from an `init()`:
+
+```go
+func init() { cop.Register(NewMyCop()) }
+```
+
+Then `main.go` picks it up automatically via `cop.All()`.
+
+### Type-aware cops
+
+For cops that need type information, implement the optional `cop.TypeAware`
+interface (a `NeedsTypes() bool` method that returns true). The runner will
+then populate `p.Info` and `p.Package` on the `*cop.Pass`.
+

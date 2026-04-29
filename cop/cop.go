@@ -210,15 +210,21 @@ var (
 	registry []Cop
 )
 
-// Register adds a cop to the global registry.
-// Typically called from init() functions.
+// Register adds a cop to the global registry. The bundled CLI in main.go
+// uses this so that adding a cop to the cops/ package is enough to ship it.
+//
+// Embedders that build their own runner (see examples/embed) typically do
+// not call Register at all — they pass an explicit slice of cops to
+// runner.New and never touch the global. Use whichever style suits your
+// program; the two can also coexist.
 func Register(c Cop) {
 	mu.Lock()
 	defer mu.Unlock()
 	registry = append(registry, c)
 }
 
-// All returns all registered cops.
+// All returns every cop registered through Register.
+// Embedders maintaining their own slice should not need this.
 func All() []Cop {
 	mu.Lock()
 	defer mu.Unlock()
