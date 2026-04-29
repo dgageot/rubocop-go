@@ -27,43 +27,25 @@ func NewStyleErrorNaming() *StyleErrorNaming {
 }
 
 func (c *StyleErrorNaming) Check(p *cop.Pass) {
-	ast.Inspect(p.File, func(n ast.Node) bool {
-		assign, ok := n.(*ast.AssignStmt)
-		if !ok {
-			return true
+	p.ForEachAssign(func(assign *ast.AssignStmt) {
+		// Only short variable declarations (:=) returning at least two values
+		// from a function call.
+		if assign.Tok != token.DEFINE || len(assign.Lhs) < 2 || len(assign.Rhs) != 1 {
+			return
 		}
-
-		// Only check short variable declarations (:=)
-		if assign.Tok != token.DEFINE {
-			return true
-		}
-
-		// Check if the last return value looks like an error.
-		// Convention: if a function returns (T, error), the error is the last value.
-		if len(assign.Lhs) < 2 {
-			return true
+		if _, isCall := assign.Rhs[0].(*ast.CallExpr); !isCall {
+			return
 		}
 
 		lastLhs := assign.Lhs[len(assign.Lhs)-1]
 		ident, ok := lastLhs.(*ast.Ident)
 		if !ok || ident.Name == "_" {
-			return true
-		}
-
-		// Check if the last RHS is a function call.
-		if len(assign.Rhs) != 1 {
-			return true
-		}
-		_, isCall := assign.Rhs[0].(*ast.CallExpr)
-		if !isCall {
-			return true
+			return
 		}
 
 		// The last LHS variable should be "err" or start with "err".
 		if !strings.HasPrefix(strings.ToLower(ident.Name), "err") {
 			p.Report(ident, "error variable '%s' should be named 'err' or start with 'err'", ident.Name)
 		}
-
-		return true
 	})
 }

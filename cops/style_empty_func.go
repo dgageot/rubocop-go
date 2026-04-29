@@ -24,23 +24,13 @@ func NewStyleEmptyFunc() *StyleEmptyFunc {
 }
 
 func (c *StyleEmptyFunc) Check(p *cop.Pass) {
-	ast.Inspect(p.File, func(n ast.Node) bool {
-		fn, ok := n.(*ast.FuncDecl)
-		if !ok {
-			return true
+	p.ForEachFunc(func(fn *ast.FuncDecl) {
+		// Skip functions with no body (e.g. external declarations) and
+		// non-empty bodies.
+		if fn.Body == nil || len(fn.Body.List) > 0 {
+			return
 		}
-
-		// Skip functions with no body (e.g. external declarations).
-		if fn.Body == nil {
-			return true
-		}
-
-		// Skip functions that only return (interface stubs).
-		if len(fn.Body.List) == 0 {
-			p.ReportAt(fn.Pos(), fn.Name.End(),
-				"function '%s' has an empty body", fn.Name.Name)
-		}
-
-		return true
+		p.ReportAt(fn.Pos(), fn.Name.End(),
+			"function '%s' has an empty body", fn.Name.Name)
 	})
 }

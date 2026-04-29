@@ -35,23 +35,22 @@ func (c *LintCloneCompleteness) Check(p *cop.Pass) {
 		return
 	}
 
-	for _, decl := range p.File.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Recv == nil || fn.Name.Name != "Clone" || fn.Body == nil {
-			continue
+	p.ForEachFunc(func(fn *ast.FuncDecl) {
+		if fn.Recv == nil || fn.Name.Name != "Clone" || fn.Body == nil {
+			return
 		}
 
 		// Resolve the receiver's underlying struct type, unwrapping pointers.
 		recvType := resolveRecvStruct(fn, p.Info)
 		if recvType == nil {
-			continue
+			return
 		}
 
 		// Collect all fields that need deep copying (pointer, slice, map),
 		// including fields from embedded structs (flattened).
 		needsCopy := deepCopyFields(recvType)
 		if len(needsCopy) == 0 {
-			continue
+			return
 		}
 
 		// Collect field names referenced in the Clone body.
@@ -62,7 +61,7 @@ func (c *LintCloneCompleteness) Check(p *cop.Pass) {
 				p.Report(fn.Name, "Clone() does not copy field '%s' (pointer/slice/map)", name)
 			}
 		}
-	}
+	})
 }
 
 // resolveRecvStruct returns the *types.Struct underlying the receiver of fn,

@@ -24,15 +24,10 @@ func NewLintOsExit() *LintOsExit {
 }
 
 func (c *LintOsExit) Check(p *cop.Pass) {
-	for _, decl := range p.File.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok {
-			continue
-		}
-
+	p.ForEachFunc(func(fn *ast.FuncDecl) {
 		// Allow os.Exit in main()
 		if p.IsMain() && fn.Name.Name == "main" {
-			continue
+			return
 		}
 
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
@@ -40,22 +35,10 @@ func (c *LintOsExit) Check(p *cop.Pass) {
 			if !ok {
 				return true
 			}
-
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-
-			ident, ok := sel.X.(*ast.Ident)
-			if !ok {
-				return true
-			}
-
-			if ident.Name == "os" && sel.Sel.Name == "Exit" {
+			if cop.IsCallTo(call, "os", "Exit") {
 				p.Report(call, "avoid os.Exit outside of main()")
 			}
-
 			return true
 		})
-	}
+	})
 }
