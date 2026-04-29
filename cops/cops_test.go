@@ -33,7 +33,7 @@ func helper() {
 	os.Exit(1)
 }
 `
-	offenses := run(t, &cops.LintOsExit{}, "sample.go", src)
+	offenses := run(t, cops.NewLintOsExit(), "sample.go", src)
 
 	require.Len(t, offenses, 1)
 	assert.Equal(t, "Lint/OsExit", offenses[0].CopName)
@@ -49,7 +49,7 @@ func main() {
 	os.Exit(0)
 }
 `
-	offenses := run(t, &cops.LintOsExit{}, "main.go", src)
+	offenses := run(t, cops.NewLintOsExit(), "main.go", src)
 	assert.Empty(t, offenses)
 }
 
@@ -63,7 +63,7 @@ func caller() {
 	_ = e
 }
 `
-	offenses := run(t, &cops.StyleErrorNaming{}, "sample.go", src)
+	offenses := run(t, cops.NewStyleErrorNaming(), "sample.go", src)
 
 	require.Len(t, offenses, 1)
 	assert.Equal(t, "Style/ErrorNaming", offenses[0].CopName)
@@ -80,7 +80,7 @@ func caller() {
 	_ = err
 }
 `
-	offenses := run(t, &cops.StyleErrorNaming{}, "sample.go", src)
+	offenses := run(t, cops.NewStyleErrorNaming(), "sample.go", src)
 	assert.Empty(t, offenses)
 }
 
@@ -90,7 +90,7 @@ func TestStyleEmptyFunc_EmptyBody(t *testing.T) {
 func doNothing() {
 }
 `
-	offenses := run(t, &cops.StyleEmptyFunc{}, "sample.go", src)
+	offenses := run(t, cops.NewStyleEmptyFunc(), "sample.go", src)
 
 	require.Len(t, offenses, 1)
 	assert.Equal(t, "Style/EmptyFunc", offenses[0].CopName)
@@ -107,7 +107,7 @@ func Hello() {
 	fmt.Printf("value: %d", 42)
 }
 `
-	offenses := run(t, &cops.LintFmtPrint{}, "mylib.go", src)
+	offenses := run(t, cops.NewLintFmtPrint(), "mylib.go", src)
 
 	require.Len(t, offenses, 2)
 	assert.Equal(t, "Lint/FmtPrint", offenses[0].CopName)
@@ -124,7 +124,7 @@ func main() {
 	fmt.Println("hello")
 }
 `
-	offenses := run(t, &cops.LintFmtPrint{}, "main.go", src)
+	offenses := run(t, cops.NewLintFmtPrint(), "main.go", src)
 	assert.Empty(t, offenses)
 }
 
@@ -137,7 +137,7 @@ func Wrap() error {
 	return fmt.Errorf("bad: %w", nil)
 }
 `
-	offenses := run(t, &cops.LintFmtPrint{}, "mylib.go", src)
+	offenses := run(t, cops.NewLintFmtPrint(), "mylib.go", src)
 	assert.Empty(t, offenses)
 }
 
@@ -148,6 +148,6 @@ func doSomething() {
 	println("hello")
 }
 `
-	offenses := run(t, &cops.StyleEmptyFunc{}, "sample.go", src)
+	offenses := run(t, cops.NewStyleEmptyFunc(), "sample.go", src)
 	assert.Empty(t, offenses)
 }

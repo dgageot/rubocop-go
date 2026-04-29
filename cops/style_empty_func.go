@@ -8,13 +8,20 @@ import (
 
 // StyleEmptyFunc detects empty function bodies.
 // An empty function body might indicate unfinished code or a missing implementation.
-type StyleEmptyFunc struct{}
+type StyleEmptyFunc struct {
+	cop.Meta
+}
 
-func init() { cop.Register(&StyleEmptyFunc{}) }
+func init() { cop.Register(NewStyleEmptyFunc()) }
 
-func (*StyleEmptyFunc) Name() string           { return "Style/EmptyFunc" }
-func (*StyleEmptyFunc) Description() string    { return "Avoid empty function bodies" }
-func (*StyleEmptyFunc) Severity() cop.Severity { return cop.Convention }
+// NewStyleEmptyFunc returns a fully configured StyleEmptyFunc cop.
+func NewStyleEmptyFunc() *StyleEmptyFunc {
+	return &StyleEmptyFunc{Meta: cop.Meta{
+		CopName:     "Style/EmptyFunc",
+		CopDesc:     "Avoid empty function bodies",
+		CopSeverity: cop.Convention,
+	}}
+}
 
 func (c *StyleEmptyFunc) Check(p *cop.Pass) {
 	ast.Inspect(p.File, func(n ast.Node) bool {

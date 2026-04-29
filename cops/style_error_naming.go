@@ -11,13 +11,20 @@ import (
 // StyleErrorNaming checks that error variables follow the err/Err naming convention.
 // In Go, error variables returned from function calls should be named "err" or
 // start with "err" (e.g. errNotFound), not arbitrary names like "e" or "error".
-type StyleErrorNaming struct{}
+type StyleErrorNaming struct {
+	cop.Meta
+}
 
-func init() { cop.Register(&StyleErrorNaming{}) }
+func init() { cop.Register(NewStyleErrorNaming()) }
 
-func (*StyleErrorNaming) Name() string           { return "Style/ErrorNaming" }
-func (*StyleErrorNaming) Description() string    { return "Error variables should be named err or start with err" }
-func (*StyleErrorNaming) Severity() cop.Severity { return cop.Convention }
+// NewStyleErrorNaming returns a fully configured StyleErrorNaming cop.
+func NewStyleErrorNaming() *StyleErrorNaming {
+	return &StyleErrorNaming{Meta: cop.Meta{
+		CopName:     "Style/ErrorNaming",
+		CopDesc:     "Error variables should be named err or start with err",
+		CopSeverity: cop.Convention,
+	}}
+}
 
 func (c *StyleErrorNaming) Check(p *cop.Pass) {
 	ast.Inspect(p.File, func(n ast.Node) bool {

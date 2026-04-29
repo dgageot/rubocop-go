@@ -8,13 +8,20 @@ import (
 
 // LintOsExit detects os.Exit() calls outside the main function.
 // Calling os.Exit bypasses deferred functions and makes code harder to test.
-type LintOsExit struct{}
+type LintOsExit struct {
+	cop.Meta
+}
 
-func init() { cop.Register(&LintOsExit{}) }
+func init() { cop.Register(NewLintOsExit()) }
 
-func (*LintOsExit) Name() string           { return "Lint/OsExit" }
-func (*LintOsExit) Description() string    { return "Avoid os.Exit outside of main()" }
-func (*LintOsExit) Severity() cop.Severity { return cop.Warning }
+// NewLintOsExit returns a fully configured LintOsExit cop.
+func NewLintOsExit() *LintOsExit {
+	return &LintOsExit{Meta: cop.Meta{
+		CopName:     "Lint/OsExit",
+		CopDesc:     "Avoid os.Exit outside of main()",
+		CopSeverity: cop.Warning,
+	}}
+}
 
 func (c *LintOsExit) Check(p *cop.Pass) {
 	for _, decl := range p.File.Decls {

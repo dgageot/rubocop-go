@@ -8,13 +8,20 @@ import (
 
 // LintFmtPrint detects fmt.Print/Println/Printf calls in non-main packages.
 // These are usually debugging leftovers that should be replaced with proper logging.
-type LintFmtPrint struct{}
+type LintFmtPrint struct {
+	cop.Meta
+}
 
-func init() { cop.Register(&LintFmtPrint{}) }
+func init() { cop.Register(NewLintFmtPrint()) }
 
-func (*LintFmtPrint) Name() string           { return "Lint/FmtPrint" }
-func (*LintFmtPrint) Description() string    { return "Avoid fmt.Print* in library code (use a logger)" }
-func (*LintFmtPrint) Severity() cop.Severity { return cop.Warning }
+// NewLintFmtPrint returns a fully configured LintFmtPrint cop.
+func NewLintFmtPrint() *LintFmtPrint {
+	return &LintFmtPrint{Meta: cop.Meta{
+		CopName:     "Lint/FmtPrint",
+		CopDesc:     "Avoid fmt.Print* in library code (use a logger)",
+		CopSeverity: cop.Warning,
+	}}
+}
 
 var fmtPrintFuncs = map[string]bool{
 	"Print":   true,

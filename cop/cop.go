@@ -141,6 +141,34 @@ type Cop interface {
 	Check(p *Pass)
 }
 
+// Meta carries the static metadata of a cop. Embed it in your cop struct to
+// satisfy Name(), Description() and Severity() without writing the three
+// methods by hand:
+//
+//	type LintOsExit struct {
+//	    cop.Meta
+//	}
+//
+//	var _ = cop.Register(&LintOsExit{Meta: cop.Meta{
+//	    CopName:     "Lint/OsExit",
+//	    CopDesc:     "Avoid os.Exit outside of main()",
+//	    CopSeverity: cop.Warning,
+//	}})
+type Meta struct {
+	CopName     string
+	CopDesc     string
+	CopSeverity Severity
+}
+
+// Name implements Cop.
+func (m Meta) Name() string { return m.CopName }
+
+// Description implements Cop.
+func (m Meta) Description() string { return m.CopDesc }
+
+// Severity implements Cop.
+func (m Meta) Severity() Severity { return m.CopSeverity }
+
 // TypeAware is an optional interface that a Cop can implement to request
 // type information. When a cop implements TypeAware and NeedsTypes returns
 // true, the runner type-checks the package and populates p.Info and

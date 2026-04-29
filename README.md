@@ -59,14 +59,16 @@ import (
 )
 
 func init() {
-	cop.Register(MyCop{})
+	cop.Register(&MyCop{Meta: cop.Meta{
+		CopName:     "Style/MyCop",
+		CopDesc:     "Checks something useful",
+		CopSeverity: cop.Convention,
+	}})
 }
 
-type MyCop struct{}
-
-func (c MyCop) Name() string        { return "Style/MyCop" }
-func (c MyCop) Description() string { return "Checks something useful" }
-func (c MyCop) Severity() cop.Severity { return cop.Convention }
+type MyCop struct {
+	cop.Meta
+}
 
 func (c MyCop) Check(p *cop.Pass) {
 	// Inspect p.File and call p.Report(node, format, args...) on offenses.

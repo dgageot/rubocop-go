@@ -11,13 +11,20 @@ import (
 // and map field of the receiver struct. When a new field is added to a struct
 // but the Clone() method is not updated, the shallow copy can lead to shared
 // backing data and subtle mutation or data-race bugs.
-type LintCloneCompleteness struct{}
+type LintCloneCompleteness struct {
+	cop.Meta
+}
 
-func init() { cop.Register(&LintCloneCompleteness{}) }
+func init() { cop.Register(NewLintCloneCompleteness()) }
 
-func (*LintCloneCompleteness) Name() string        { return "Lint/CloneCompleteness" }
-func (*LintCloneCompleteness) Description() string { return "Clone() must handle all pointer/slice/map fields" }
-func (*LintCloneCompleteness) Severity() cop.Severity { return cop.Error }
+// NewLintCloneCompleteness returns a fully configured LintCloneCompleteness cop.
+func NewLintCloneCompleteness() *LintCloneCompleteness {
+	return &LintCloneCompleteness{Meta: cop.Meta{
+		CopName:     "Lint/CloneCompleteness",
+		CopDesc:     "Clone() must handle all pointer/slice/map fields",
+		CopSeverity: cop.Error,
+	}}
+}
 
 // NeedsTypes opts the cop into type information.
 func (*LintCloneCompleteness) NeedsTypes() bool { return true }

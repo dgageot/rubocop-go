@@ -58,7 +58,7 @@ func (c *Config) Clone() *Config {
 	}
 }
 `
-	offenses := runTyped(t, &cops.LintCloneCompleteness{}, src)
+	offenses := runTyped(t, cops.NewLintCloneCompleteness(), src)
 
 	require.Len(t, offenses, 2)
 	assert.Contains(t, offenses[0].Message, "Items")
@@ -85,7 +85,7 @@ func (c *Config) Clone() *Config {
 	}
 }
 `
-	offenses := runTyped(t, &cops.LintCloneCompleteness{}, src)
+	offenses := runTyped(t, cops.NewLintCloneCompleteness(), src)
 	assert.Empty(t, offenses)
 }
 
@@ -108,7 +108,7 @@ func (o *Outer) Clone() *Outer {
 	}
 }
 `
-	offenses := runTyped(t, &cops.LintCloneCompleteness{}, src)
+	offenses := runTyped(t, cops.NewLintCloneCompleteness(), src)
 
 	require.Len(t, offenses, 1)
 	assert.Contains(t, offenses[0].Message, "Inner")
@@ -133,7 +133,7 @@ func (e *Extended) Clone() *Extended {
 	}
 }
 `
-	offenses := runTyped(t, &cops.LintCloneCompleteness{}, src)
+	offenses := runTyped(t, cops.NewLintCloneCompleteness(), src)
 
 	require.Len(t, offenses, 1)
 	assert.Contains(t, offenses[0].Message, "Tags")
@@ -150,7 +150,7 @@ func (c *Config) String() string {
 	return "config"
 }
 `
-	offenses := runTyped(t, &cops.LintCloneCompleteness{}, src)
+	offenses := runTyped(t, cops.NewLintCloneCompleteness(), src)
 	assert.Empty(t, offenses)
 }
 
@@ -166,6 +166,6 @@ func (p *Point) Clone() *Point {
 	return &Point{X: p.X, Y: p.Y}
 }
 `
-	offenses := runTyped(t, &cops.LintCloneCompleteness{}, src)
+	offenses := runTyped(t, cops.NewLintCloneCompleteness(), src)
 	assert.Empty(t, offenses)
 }
