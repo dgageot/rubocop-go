@@ -5,10 +5,22 @@ import (
 	"go/token"
 	"testing"
 
+	"github.com/dgageot/rubocop-go/cop"
 	"github.com/dgageot/rubocop-go/cops"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// pass parses src and returns a *cop.Pass for it.
+func pass(t *testing.T, filename, src string) *cop.Pass {
+	t.Helper()
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filename, src, 0)
+	require.NoError(t, err)
+
+	return &cop.Pass{FileSet: fset, File: file}
+}
 
 func TestLintOsExit_InHelper(t *testing.T) {
 	src := `package sample
@@ -19,12 +31,8 @@ func helper() {
 	os.Exit(1)
 }
 `
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "sample.go", src, 0)
-	require.NoError(t, err)
-
 	c := &cops.LintOsExit{}
-	offenses := c.Check(fset, file)
+	offenses := c.Check(pass(t, "sample.go", src))
 
 	require.Len(t, offenses, 1)
 	assert.Equal(t, "Lint/OsExit", offenses[0].CopName)
@@ -40,12 +48,8 @@ func main() {
 	os.Exit(0)
 }
 `
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "main.go", src, 0)
-	require.NoError(t, err)
-
 	c := &cops.LintOsExit{}
-	offenses := c.Check(fset, file)
+	offenses := c.Check(pass(t, "main.go", src))
 
 	assert.Empty(t, offenses)
 }
@@ -60,12 +64,8 @@ func caller() {
 	_ = e
 }
 `
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "sample.go", src, 0)
-	require.NoError(t, err)
-
 	c := &cops.StyleErrorNaming{}
-	offenses := c.Check(fset, file)
+	offenses := c.Check(pass(t, "sample.go", src))
 
 	require.Len(t, offenses, 1)
 	assert.Equal(t, "Style/ErrorNaming", offenses[0].CopName)
@@ -82,12 +82,8 @@ func caller() {
 	_ = err
 }
 `
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "sample.go", src, 0)
-	require.NoError(t, err)
-
 	c := &cops.StyleErrorNaming{}
-	offenses := c.Check(fset, file)
+	offenses := c.Check(pass(t, "sample.go", src))
 
 	assert.Empty(t, offenses)
 }
@@ -98,12 +94,8 @@ func TestStyleEmptyFunc_EmptyBody(t *testing.T) {
 func doNothing() {
 }
 `
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "sample.go", src, 0)
-	require.NoError(t, err)
-
 	c := &cops.StyleEmptyFunc{}
-	offenses := c.Check(fset, file)
+	offenses := c.Check(pass(t, "sample.go", src))
 
 	require.Len(t, offenses, 1)
 	assert.Equal(t, "Style/EmptyFunc", offenses[0].CopName)
@@ -120,12 +112,8 @@ func Hello() {
 	fmt.Printf("value: %d", 42)
 }
 `
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "mylib.go", src, 0)
-	require.NoError(t, err)
-
 	c := &cops.LintFmtPrint{}
-	offenses := c.Check(fset, file)
+	offenses := c.Check(pass(t, "mylib.go", src))
 
 	require.Len(t, offenses, 2)
 	assert.Equal(t, "Lint/FmtPrint", offenses[0].CopName)
@@ -142,12 +130,8 @@ func main() {
 	fmt.Println("hello")
 }
 `
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "main.go", src, 0)
-	require.NoError(t, err)
-
 	c := &cops.LintFmtPrint{}
-	offenses := c.Check(fset, file)
+	offenses := c.Check(pass(t, "main.go", src))
 
 	assert.Empty(t, offenses)
 }
@@ -161,12 +145,8 @@ func Wrap() error {
 	return fmt.Errorf("bad: %w", nil)
 }
 `
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "mylib.go", src, 0)
-	require.NoError(t, err)
-
 	c := &cops.LintFmtPrint{}
-	offenses := c.Check(fset, file)
+	offenses := c.Check(pass(t, "mylib.go", src))
 
 	assert.Empty(t, offenses)
 }
@@ -178,12 +158,8 @@ func doSomething() {
 	println("hello")
 }
 `
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "sample.go", src, 0)
-	require.NoError(t, err)
-
 	c := &cops.StyleEmptyFunc{}
-	offenses := c.Check(fset, file)
+	offenses := c.Check(pass(t, "sample.go", src))
 
 	assert.Empty(t, offenses)
 }

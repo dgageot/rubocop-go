@@ -9,14 +9,15 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/dgageot/rubocop-go/cop"
 	"github.com/dgageot/rubocop-go/cops"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// parseAndTypeCheck writes src to a temp file, parses and type-checks it,
-// then returns everything the cop needs.
-func parseAndTypeCheck(t *testing.T, src string) (*token.FileSet, *ast.File, *types.Info, *types.Package) {
+// typedPass writes src to a temp file, parses and type-checks it, then
+// returns a *cop.Pass populated with type information.
+func typedPass(t *testing.T, src string) *cop.Pass {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -36,7 +37,7 @@ func parseAndTypeCheck(t *testing.T, src string) (*token.FileSet, *ast.File, *ty
 	cfg := &types.Config{Error: func(error) {}}
 	pkg, _ := cfg.Check(dir, fset, []*ast.File{file}, info)
 
-	return fset, file, info, pkg
+	return &cop.Pass{FileSet: fset, File: file, Info: info, Package: pkg}
 }
 
 func TestLintCloneCompleteness_MissingField(t *testing.T) {
@@ -55,10 +56,8 @@ func (c *Config) Clone() *Config {
 	}
 }
 `
-	fset, file, info, pkg := parseAndTypeCheck(t, src)
-
 	c := &cops.LintCloneCompleteness{}
-	offenses := c.CheckTyped(fset, file, info, pkg)
+	offenses := c.Check(typedPass(t, src))
 
 	require.Len(t, offenses, 2)
 	assert.Contains(t, offenses[0].Message, "Items")
@@ -85,10 +84,8 @@ func (c *Config) Clone() *Config {
 	}
 }
 `
-	fset, file, info, pkg := parseAndTypeCheck(t, src)
-
 	c := &cops.LintCloneCompleteness{}
-	offenses := c.CheckTyped(fset, file, info, pkg)
+	offenses := c.Check(typedPass(t, src))
 
 	assert.Empty(t, offenses)
 }
@@ -112,10 +109,8 @@ func (o *Outer) Clone() *Outer {
 	}
 }
 `
-	fset, file, info, pkg := parseAndTypeCheck(t, src)
-
 	c := &cops.LintCloneCompleteness{}
-	offenses := c.CheckTyped(fset, file, info, pkg)
+	offenses := c.Check(typedPass(t, src))
 
 	require.Len(t, offenses, 1)
 	assert.Contains(t, offenses[0].Message, "Inner")
@@ -140,10 +135,8 @@ func (e *Extended) Clone() *Extended {
 	}
 }
 `
-	fset, file, info, pkg := parseAndTypeCheck(t, src)
-
 	c := &cops.LintCloneCompleteness{}
-	offenses := c.CheckTyped(fset, file, info, pkg)
+	offenses := c.Check(typedPass(t, src))
 
 	require.Len(t, offenses, 1)
 	assert.Contains(t, offenses[0].Message, "Tags")
@@ -160,10 +153,8 @@ func (c *Config) String() string {
 	return "config"
 }
 `
-	fset, file, info, pkg := parseAndTypeCheck(t, src)
-
 	c := &cops.LintCloneCompleteness{}
-	offenses := c.CheckTyped(fset, file, info, pkg)
+	offenses := c.Check(typedPass(t, src))
 
 	assert.Empty(t, offenses)
 }
@@ -180,10 +171,8 @@ func (p *Point) Clone() *Point {
 	return &Point{X: p.X, Y: p.Y}
 }
 `
-	fset, file, info, pkg := parseAndTypeCheck(t, src)
-
 	c := &cops.LintCloneCompleteness{}
-	offenses := c.CheckTyped(fset, file, info, pkg)
+	offenses := c.Check(typedPass(t, src))
 
 	assert.Empty(t, offenses)
 }

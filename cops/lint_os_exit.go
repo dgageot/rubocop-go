@@ -2,7 +2,6 @@ package cops
 
 import (
 	"go/ast"
-	"go/token"
 
 	"github.com/dgageot/rubocop-go/cop"
 )
@@ -13,21 +12,21 @@ type LintOsExit struct{}
 
 func init() { cop.Register(&LintOsExit{}) }
 
-func (*LintOsExit) Name() string        { return "Lint/OsExit" }
-func (*LintOsExit) Description() string { return "Avoid os.Exit outside of main()" }
+func (*LintOsExit) Name() string           { return "Lint/OsExit" }
+func (*LintOsExit) Description() string    { return "Avoid os.Exit outside of main()" }
 func (*LintOsExit) Severity() cop.Severity { return cop.Warning }
 
-func (c *LintOsExit) Check(fset *token.FileSet, file *ast.File) []cop.Offense {
+func (c *LintOsExit) Check(p *cop.Pass) []cop.Offense {
 	var offenses []cop.Offense
 
-	for _, decl := range file.Decls {
+	for _, decl := range p.File.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok {
 			continue
 		}
 
 		// Allow os.Exit in main()
-		if file.Name.Name == "main" && fn.Name.Name == "main" {
+		if p.IsMain() && fn.Name.Name == "main" {
 			continue
 		}
 
@@ -48,7 +47,7 @@ func (c *LintOsExit) Check(fset *token.FileSet, file *ast.File) []cop.Offense {
 			}
 
 			if ident.Name == "os" && sel.Sel.Name == "Exit" {
-				offenses = append(offenses, cop.NewOffense(c, fset, call.Pos(), call.End(), "avoid os.Exit outside of main()"))
+				offenses = append(offenses, cop.NewOffense(c, p.FileSet, call, "avoid os.Exit outside of main()"))
 			}
 
 			return true

@@ -2,7 +2,6 @@ package cops
 
 import (
 	"go/ast"
-	"go/token"
 	"go/types"
 
 	"github.com/dgageot/rubocop-go/cop"
@@ -20,27 +19,25 @@ func (*LintCloneCompleteness) Name() string        { return "Lint/CloneCompleten
 func (*LintCloneCompleteness) Description() string { return "Clone() must handle all pointer/slice/map fields" }
 func (*LintCloneCompleteness) Severity() cop.Severity { return cop.Error }
 
-// Check satisfies the Cop interface but is a no-op — all work is in CheckTyped.
-func (*LintCloneCompleteness) Check(*token.FileSet, *ast.File) []cop.Offense {
-	return nil
-}
+// NeedsTypes opts the cop into type information.
+func (*LintCloneCompleteness) NeedsTypes() bool { return true }
 
-// CheckTyped inspects Clone() methods for missing field copies.
-func (c *LintCloneCompleteness) CheckTyped(fset *token.FileSet, file *ast.File, info *types.Info, _ *types.Package) []cop.Offense {
-	if info == nil {
+// Check inspects Clone() methods for missing field copies.
+func (c *LintCloneCompleteness) Check(p *cop.Pass) []cop.Offense {
+	if p.Info == nil {
 		return nil
 	}
 
 	var offenses []cop.Offense
 
-	for _, decl := range file.Decls {
+	for _, decl := range p.File.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Recv == nil || fn.Name.Name != "Clone" || fn.Body == nil {
 			continue
 		}
 
 		// Resolve the receiver's underlying struct type, unwrapping pointers.
-		recvType := resolveRecvStruct(fn, info)
+		recvType := resolveRecvStruct(fn, p.Info)
 		if recvType == nil {
 			continue
 		}
@@ -57,7 +54,7 @@ func (c *LintCloneCompleteness) CheckTyped(fset *token.FileSet, file *ast.File, 
 
 		for _, name := range needsCopy {
 			if !referenced[name] {
-				offenses = append(offenses, cop.NewOffense(c, fset, fn.Name.Pos(), fn.Name.End(),
+				offenses = append(offenses, cop.NewOffense(c, p.FileSet, fn.Name,
 					"Clone() does not copy field '"+name+"' (pointer/slice/map)"))
 			}
 		}

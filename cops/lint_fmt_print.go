@@ -2,7 +2,6 @@ package cops
 
 import (
 	"go/ast"
-	"go/token"
 
 	"github.com/dgageot/rubocop-go/cop"
 )
@@ -23,15 +22,15 @@ var fmtPrintFuncs = map[string]bool{
 	"Printf":  true,
 }
 
-func (c *LintFmtPrint) Check(fset *token.FileSet, file *ast.File) []cop.Offense {
+func (c *LintFmtPrint) Check(p *cop.Pass) []cop.Offense {
 	// Allow fmt.Print in main packages — that's often intentional CLI output.
-	if file.Name.Name == "main" {
+	if p.IsMain() {
 		return nil
 	}
 
 	var offenses []cop.Offense
 
-	ast.Inspect(file, func(n ast.Node) bool {
+	ast.Inspect(p.File, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
@@ -48,7 +47,7 @@ func (c *LintFmtPrint) Check(fset *token.FileSet, file *ast.File) []cop.Offense 
 		}
 
 		if ident.Name == "fmt" && fmtPrintFuncs[sel.Sel.Name] {
-			offenses = append(offenses, cop.NewOffense(c, fset, call.Pos(), call.End(),
+			offenses = append(offenses, cop.NewOffense(c, p.FileSet, call,
 				"fmt."+sel.Sel.Name+" in library code — use a logger instead"))
 		}
 

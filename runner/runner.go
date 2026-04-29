@@ -30,12 +30,8 @@ type Runner struct {
 	Config *config.Config
 	Out    io.Writer
 
-	// needsTypes is true when at least one cop implements TypeAwareCop.
+	// needsTypes is true when at least one cop requests type information.
 	needsTypes bool
-	// typedCops holds cops that implement TypeAwareCop.
-	typedCops []cop.TypeAwareCop
-	// simpleCops holds cops that only implement Cop.
-	simpleCops []cop.Cop
 }
 
 // New creates a Runner with the given cops filtered by config.
@@ -54,11 +50,9 @@ func New(cops []cop.Cop, cfg *config.Config, out io.Writer) *Runner {
 	}
 
 	for _, c := range enabled {
-		if tc, ok := c.(cop.TypeAwareCop); ok {
+		if t, ok := c.(cop.TypeAware); ok && t.NeedsTypes() {
 			r.needsTypes = true
-			r.typedCops = append(r.typedCops, tc)
-		} else {
-			r.simpleCops = append(r.simpleCops, c)
+			break
 		}
 	}
 
@@ -77,8 +71,9 @@ func (r *Runner) Run(paths []string) (int, error) {
 
 	fset := token.NewFileSet()
 
-	// If we need type info, group files by directory and type-check per package.
 	if r.needsTypes {
+		// Group files by directory and type-check per package so type-aware
+		// cops can resolve symbols.
 		byDir := groupByDir(files)
 
 		for dir, dirFiles := range byDir {
@@ -90,17 +85,8 @@ func (r *Runner) Run(paths []string) (int, error) {
 			info, pkg := typeCheck(fset, dir, parsed)
 
 			for _, pf := range parsed {
-				var fileOffenses []cop.Offense
-
-				// Run simple cops.
-				for _, c := range r.simpleCops {
-					fileOffenses = append(fileOffenses, c.Check(fset, pf)...)
-				}
-
-				// Run typed cops.
-				for _, c := range r.typedCops {
-					fileOffenses = append(fileOffenses, c.CheckTyped(fset, pf, info, pkg)...)
-				}
+				p := &cop.Pass{FileSet: fset, File: pf, Info: info, Package: pkg}
+				fileOffenses := r.runCops(p)
 
 				filesInspected++
 				r.printProgress(fileOffenses)
@@ -115,10 +101,8 @@ func (r *Runner) Run(paths []string) (int, error) {
 				continue
 			}
 
-			var fileOffenses []cop.Offense
-			for _, c := range r.Cops {
-				fileOffenses = append(fileOffenses, c.Check(fset, f)...)
-			}
+			p := &cop.Pass{FileSet: fset, File: f}
+			fileOffenses := r.runCops(p)
 
 			filesInspected++
 			r.printProgress(fileOffenses)
@@ -158,6 +142,15 @@ func (r *Runner) Run(paths []string) (int, error) {
 	}
 
 	return len(allOffenses), nil
+}
+
+// runCops invokes every enabled cop against the pass and returns the merged offense list.
+func (r *Runner) runCops(p *cop.Pass) []cop.Offense {
+	var offenses []cop.Offense
+	for _, c := range r.Cops {
+		offenses = append(offenses, c.Check(p)...)
+	}
+	return offenses
 }
 
 func (r *Runner) printProgress(offenses []cop.Offense) {

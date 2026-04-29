@@ -4,14 +4,15 @@
 // To write a custom cop:
 //
 //  1. Create a struct that implements the Cop interface
-//  2. Register it with cop.Register in an init() function
-//  3. Import the package from cops/register.go
+//  2. Register it with cop.Register in an init() function (optional)
+//  3. Or pass it explicitly to runner.New
 package cop
 
 import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"strings"
 	"sync"
 )
 
@@ -20,8 +21,8 @@ type Severity int
 
 const (
 	Convention Severity = iota // style violation
-	Warning                   // potential issue
-	Error                     // definite bug
+	Warning                    // potential issue
+	Error                      // definite bug
 )
 
 func (s Severity) String() string {
@@ -60,6 +61,45 @@ type Offense struct {
 	Severity Severity
 }
 
+// Pass carries everything a Cop needs to inspect a single file.
+//
+// FileSet and File are always populated. Info and Package are populated only
+// for cops that opt into type information by implementing the TypeAware
+// interface; otherwise they are nil.
+type Pass struct {
+	FileSet *token.FileSet
+	File    *ast.File
+	Info    *types.Info
+	Package *types.Package
+}
+
+// Filename returns the path of the file being inspected.
+func (p *Pass) Filename() string {
+	return p.FileSet.Position(p.File.Package).Filename
+}
+
+// PackageName returns the declared package name of the file.
+func (p *Pass) PackageName() string {
+	return p.File.Name.Name
+}
+
+// IsMain reports whether the file declares package main.
+func (p *Pass) IsMain() bool {
+	return p.PackageName() == "main"
+}
+
+// IsTestFile reports whether the file's name ends with _test.go.
+func (p *Pass) IsTestFile() bool {
+	return strings.HasSuffix(p.Filename(), "_test.go")
+}
+
+// IsBlackBoxTest reports whether the file declares an external test package
+// (a package name ending in _test). Such files live alongside production code
+// but live in a separate package and may import what they please.
+func (p *Pass) IsBlackBoxTest() bool {
+	return strings.HasSuffix(p.PackageName(), "_test")
+}
+
 // Cop is the interface that all cops must implement.
 type Cop interface {
 	// Name returns the cop's qualified name (e.g. "Lint/OsExit").
@@ -71,22 +111,28 @@ type Cop interface {
 	// Severity returns the default severity for offenses reported by this cop.
 	Severity() Severity
 
-	// Check inspects an AST file and returns any offenses found.
-	Check(fset *token.FileSet, file *ast.File) []Offense
+	// Check inspects a file and returns any offenses found.
+	Check(p *Pass) []Offense
 }
 
-// TypeAwareCop is an optional interface for cops that need type information.
-// When a cop implements this interface, the runner will perform type-checking
-// and call CheckTyped instead of Check.
-type TypeAwareCop interface {
-	Cop
-
-	// CheckTyped inspects an AST file with full type information and returns any offenses found.
-	CheckTyped(fset *token.FileSet, file *ast.File, info *types.Info, pkg *types.Package) []Offense
+// TypeAware is an optional interface that a Cop can implement to request
+// type information. When a cop implements TypeAware and NeedsTypes returns
+// true, the runner type-checks the package and populates p.Info and
+// p.Package on the Pass passed to Check.
+type TypeAware interface {
+	NeedsTypes() bool
 }
 
-// NewOffense creates an offense for a given cop.
-func NewOffense(c Cop, fset *token.FileSet, pos token.Pos, end token.Pos, message string) Offense {
+// NewOffense creates an offense for a given cop covering the source span of
+// the AST node n.
+func NewOffense(c Cop, fset *token.FileSet, n ast.Node, message string) Offense {
+	return NewOffenseAt(c, fset, n.Pos(), n.End(), message)
+}
+
+// NewOffenseAt creates an offense covering an arbitrary [pos, end) range.
+// Use it when the natural span of an ast.Node is wider or narrower than what
+// you want to highlight.
+func NewOffenseAt(c Cop, fset *token.FileSet, pos, end token.Pos, message string) Offense {
 	return Offense{
 		Pos:      fset.Position(pos),
 		End:      fset.Position(end),

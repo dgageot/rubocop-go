@@ -2,7 +2,6 @@ package cops
 
 import (
 	"go/ast"
-	"go/token"
 
 	"github.com/dgageot/rubocop-go/cop"
 )
@@ -17,10 +16,10 @@ func (*StyleEmptyFunc) Name() string           { return "Style/EmptyFunc" }
 func (*StyleEmptyFunc) Description() string    { return "Avoid empty function bodies" }
 func (*StyleEmptyFunc) Severity() cop.Severity { return cop.Convention }
 
-func (c *StyleEmptyFunc) Check(fset *token.FileSet, file *ast.File) []cop.Offense {
+func (c *StyleEmptyFunc) Check(p *cop.Pass) []cop.Offense {
 	var offenses []cop.Offense
 
-	ast.Inspect(file, func(n ast.Node) bool {
+	ast.Inspect(p.File, func(n ast.Node) bool {
 		fn, ok := n.(*ast.FuncDecl)
 		if !ok {
 			return true
@@ -33,7 +32,7 @@ func (c *StyleEmptyFunc) Check(fset *token.FileSet, file *ast.File) []cop.Offens
 
 		// Skip functions that only return (interface stubs).
 		if len(fn.Body.List) == 0 {
-			offenses = append(offenses, cop.NewOffense(c, fset, fn.Pos(), fn.Name.End(),
+			offenses = append(offenses, cop.NewOffenseAt(c, p.FileSet, fn.Pos(), fn.Name.End(),
 				"function '"+fn.Name.Name+"' has an empty body"))
 		}
 

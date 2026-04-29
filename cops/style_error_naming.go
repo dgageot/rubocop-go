@@ -19,10 +19,10 @@ func (*StyleErrorNaming) Name() string           { return "Style/ErrorNaming" }
 func (*StyleErrorNaming) Description() string    { return "Error variables should be named err or start with err" }
 func (*StyleErrorNaming) Severity() cop.Severity { return cop.Convention }
 
-func (c *StyleErrorNaming) Check(fset *token.FileSet, file *ast.File) []cop.Offense {
+func (c *StyleErrorNaming) Check(p *cop.Pass) []cop.Offense {
 	var offenses []cop.Offense
 
-	ast.Inspect(file, func(n ast.Node) bool {
+	ast.Inspect(p.File, func(n ast.Node) bool {
 		assign, ok := n.(*ast.AssignStmt)
 		if !ok {
 			return true
@@ -56,7 +56,7 @@ func (c *StyleErrorNaming) Check(fset *token.FileSet, file *ast.File) []cop.Offe
 
 		// The last LHS variable should be "err" or start with "err".
 		if !strings.HasPrefix(strings.ToLower(ident.Name), "err") {
-			offenses = append(offenses, cop.NewOffense(c, fset, ident.Pos(), ident.End(),
+			offenses = append(offenses, cop.NewOffense(c, p.FileSet, ident,
 				"error variable '"+ident.Name+"' should be named 'err' or start with 'err'"))
 		}
 
