@@ -4,7 +4,9 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 
+	"github.com/dgageot/rubocop-go/cop"
 	"gopkg.in/yaml.v3"
 )
 
@@ -56,4 +58,26 @@ func (c *Config) IsEnabled(copName string) bool {
 		return true
 	}
 	return *cc.Enabled
+}
+
+// SeverityFor returns the severity to use for the named cop and a flag
+// indicating whether the user provided an explicit override. When the second
+// return is false, callers should fall back to the cop's default.
+//
+// Recognised values: "convention", "warning", "error". Unknown values are
+// silently ignored (treated as no override).
+func (c *Config) SeverityFor(copName string) (cop.Severity, bool) {
+	cc, ok := c.Cops[copName]
+	if !ok {
+		return 0, false
+	}
+	switch strings.ToLower(cc.Severity) {
+	case "convention":
+		return cop.Convention, true
+	case "warning":
+		return cop.Warning, true
+	case "error":
+		return cop.Error, true
+	}
+	return 0, false
 }

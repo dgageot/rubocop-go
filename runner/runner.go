@@ -147,6 +147,9 @@ func (r *Runner) runCops(fset *token.FileSet, file *ast.File, info *types.Info, 
 	var offenses []cop.Offense
 	for _, c := range r.Cops {
 		p := &cop.Pass{Cop: c, FileSet: fset, File: file, Info: info, Package: pkg}
+		if sev, ok := r.Config.SeverityFor(c.Name()); ok {
+			p.SeverityOverride = &sev
+		}
 		c.Check(p)
 		offenses = append(offenses, p.Offenses()...)
 	}

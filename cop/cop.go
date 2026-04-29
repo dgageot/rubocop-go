@@ -74,6 +74,11 @@ type Pass struct {
 	Info    *types.Info
 	Package *types.Package
 
+	// SeverityOverride, when non-nil, replaces the cop's default severity
+	// on every offense reported through this pass. Set by the runner from
+	// .rubocop-go.yml.
+	SeverityOverride *Severity
+
 	offenses []Offense
 }
 
@@ -91,7 +96,11 @@ func (p *Pass) ReportAt(pos, end token.Pos, format string, args ...any) {
 	if len(args) > 0 {
 		msg = fmt.Sprintf(format, args...)
 	}
-	p.offenses = append(p.offenses, NewOffenseAt(p.Cop, p.FileSet, pos, end, msg))
+	o := NewOffenseAt(p.Cop, p.FileSet, pos, end, msg)
+	if p.SeverityOverride != nil {
+		o.Severity = *p.SeverityOverride
+	}
+	p.offenses = append(p.offenses, o)
 }
 
 // Offenses returns the offenses accumulated so far on this pass.
