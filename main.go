@@ -22,8 +22,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Inspecting Go files with %d cop(s)\n", len(cop.All()))
-
 	r := runner.New(cop.All(), cfg, os.Stdout)
 
 	offenseCount, err := r.Run(paths)

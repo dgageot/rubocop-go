@@ -26,15 +26,17 @@ func write(w io.Writer, format string, args ...any) {
 
 // Runner runs cops against Go source files.
 type Runner struct {
-	Cops   []cop.Cop
-	Config *config.Config
-	Out    io.Writer
+	Cops     []cop.Cop
+	Config   *config.Config
+	Reporter Reporter
 
 	// needsTypes is true when at least one cop requests type information.
 	needsTypes bool
 }
 
-// New creates a Runner with the given cops filtered by config.
+// New creates a Runner with the given cops filtered by config. The default
+// reporter is a TextReporter writing to out (or os.Stdout when out is nil);
+// override it after construction by assigning to r.Reporter.
 func New(cops []cop.Cop, cfg *config.Config, out io.Writer) *Runner {
 	var enabled []cop.Cop
 	for _, c := range cops {
@@ -44,9 +46,9 @@ func New(cops []cop.Cop, cfg *config.Config, out io.Writer) *Runner {
 	}
 
 	r := &Runner{
-		Cops:   enabled,
-		Config: cfg,
-		Out:    out,
+		Cops:     enabled,
+		Config:   cfg,
+		Reporter: NewTextReporter(out),
 	}
 
 	for _, c := range enabled {
@@ -66,9 +68,10 @@ func (r *Runner) Run(paths []string) (int, error) {
 		return 0, err
 	}
 
+	r.Reporter.Start(len(r.Cops))
+
 	var allOffenses []cop.Offense
 	filesInspected := 0
-
 	fset := token.NewFileSet()
 
 	if r.needsTypes {
@@ -77,18 +80,17 @@ func (r *Runner) Run(paths []string) (int, error) {
 		byDir := groupByDir(files)
 
 		for dir, dirFiles := range byDir {
-			parsed, ok := r.parseFiles(fset, dirFiles)
+			parsed, parsedPaths, ok := r.parseFiles(fset, dirFiles)
 			if !ok {
 				continue
 			}
 
 			info, pkg := typeCheck(fset, dir, parsed)
 
-			for _, pf := range parsed {
+			for i, pf := range parsed {
 				fileOffenses := r.runCops(fset, pf, info, pkg)
-
 				filesInspected++
-				r.printProgress(fileOffenses)
+				r.Reporter.FileFinished(parsedPaths[i], fileOffenses)
 				allOffenses = append(allOffenses, fileOffenses...)
 			}
 		}
@@ -96,19 +98,17 @@ func (r *Runner) Run(paths []string) (int, error) {
 		for _, path := range files {
 			f, parseErr := parser.ParseFile(fset, path, nil, parser.ParseComments)
 			if parseErr != nil {
-				write(r.Out, "%sE%s", cop.Error.Color(), resetColor)
+				// Surface the parse failure as a reporter event with no offenses.
+				r.Reporter.FileFinished(path, nil)
 				continue
 			}
 
 			fileOffenses := r.runCops(fset, f, nil, nil)
-
 			filesInspected++
-			r.printProgress(fileOffenses)
+			r.Reporter.FileFinished(path, fileOffenses)
 			allOffenses = append(allOffenses, fileOffenses...)
 		}
 	}
-
-	write(r.Out, "\n")
 
 	// Sort offenses by file, then line, then column.
 	slices.SortFunc(allOffenses, func(a, b cop.Offense) int {
@@ -121,23 +121,7 @@ func (r *Runner) Run(paths []string) (int, error) {
 		return a.Pos.Column - b.Pos.Column
 	})
 
-	if len(allOffenses) > 0 {
-		write(r.Out, "\nOffenses:\n\n")
-
-		for _, o := range allOffenses {
-			r.printOffense(o)
-		}
-
-		write(r.Out, "\n")
-	}
-
-	// Summary line.
-	if len(allOffenses) == 0 {
-		write(r.Out, "%d file(s) inspected, \033[32mno offenses\033[0m detected\n", filesInspected)
-	} else {
-		write(r.Out, "%d file(s) inspected, %s%d offense(s)%s detected\n",
-			filesInspected, maxSeverity(allOffenses).Color(), len(allOffenses), resetColor)
-	}
+	r.Reporter.Finish(allOffenses, filesInspected)
 
 	return len(allOffenses), nil
 }
@@ -156,47 +140,21 @@ func (r *Runner) runCops(fset *token.FileSet, file *ast.File, info *types.Info, 
 	return offenses
 }
 
-func (r *Runner) printProgress(offenses []cop.Offense) {
-	if len(offenses) > 0 {
-		severity := maxSeverity(offenses)
-		write(r.Out, "%s%s%s", severity.Color(), severity.String(), resetColor)
-	} else {
-		write(r.Out, ".")
-	}
-}
-
-func (r *Runner) parseFiles(fset *token.FileSet, paths []string) ([]*ast.File, bool) {
-	var parsed []*ast.File
+func (r *Runner) parseFiles(fset *token.FileSet, paths []string) ([]*ast.File, []string, bool) {
+	var (
+		parsed     []*ast.File
+		parsedPath []string
+	)
 	for _, p := range paths {
 		f, err := parser.ParseFile(fset, p, nil, parser.ParseComments)
 		if err != nil {
-			write(r.Out, "%sE%s", cop.Error.Color(), resetColor)
+			r.Reporter.FileFinished(p, nil)
 			continue
 		}
 		parsed = append(parsed, f)
+		parsedPath = append(parsedPath, p)
 	}
-	return parsed, len(parsed) > 0
-}
-
-func (r *Runner) printOffense(o cop.Offense) {
-	write(r.Out, "%s:%d:%d: %s%s%s: %s%s%s: %s\n",
-		o.Pos.Filename, o.Pos.Line, o.Pos.Column,
-		o.Severity.Color(), o.Severity.String(), resetColor,
-		o.Severity.Color(), o.CopName, resetColor,
-		o.Message,
-	)
-
-	// Print source context.
-	line, err := readLine(o.Pos.Filename, o.Pos.Line)
-	if err == nil {
-		write(r.Out, "%s\n", line)
-		underline := strings.Repeat(" ", o.Pos.Column-1)
-		length := o.End.Column - o.Pos.Column
-		if length <= 0 {
-			length = 1
-		}
-		write(r.Out, "%s%s%s%s\n", underline, o.Severity.Color(), strings.Repeat("^", length), resetColor)
-	}
+	return parsed, parsedPath, len(parsed) > 0
 }
 
 // typeCheck performs type-checking on a set of parsed files from the same directory.
