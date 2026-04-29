@@ -128,6 +128,8 @@ func (r *Runner) Run(paths []string) (int, error) {
 
 // runCops invokes every enabled cop against the file and returns the merged offense list.
 func (r *Runner) runCops(fset *token.FileSet, file *ast.File, info *types.Info, pkg *types.Package) []cop.Offense {
+	sup := cop.ScanSuppressions(fset, file)
+
 	var offenses []cop.Offense
 	for _, c := range r.Cops {
 		p := &cop.Pass{Cop: c, FileSet: fset, File: file, Info: info, Package: pkg}
@@ -135,7 +137,12 @@ func (r *Runner) runCops(fset *token.FileSet, file *ast.File, info *types.Info, 
 			p.SeverityOverride = &sev
 		}
 		c.Check(p)
-		offenses = append(offenses, p.Offenses()...)
+		for _, o := range p.Offenses() {
+			if sup.Suppresses(c.Name(), o.Pos.Line) {
+				continue
+			}
+			offenses = append(offenses, o)
+		}
 	}
 	return offenses
 }
