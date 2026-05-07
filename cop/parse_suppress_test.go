@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"os"
 	"path/filepath"
 	"testing"
@@ -48,9 +49,7 @@ func TestParseDir(t *testing.T) {
 		require.NoError(t, err)
 		got = map[string]string{}
 		for _, f := range files {
-			for k, v := range cop.StringConstsIn(f, nil) {
-				got[k] = v
-			}
+			maps.Copy(got, cop.StringConstsIn(f, nil))
 		}
 	})
 	coptest.RunNamed(t, probe, filepath.Join(dir, "skip.go"), "package x")

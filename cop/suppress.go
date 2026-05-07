@@ -110,7 +110,7 @@ func parseDirective(comment, prefix string) ([]string, bool) {
 		rest = rest[:idx]
 	}
 	var names []string
-	for _, part := range strings.Split(rest, ",") {
+	for part := range strings.SplitSeq(rest, ",") {
 		if name := strings.TrimSpace(part); name != "" {
 			names = append(names, name)
 		}

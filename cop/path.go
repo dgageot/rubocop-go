@@ -41,14 +41,13 @@ func (p *Pass) PathSegment(parent string) (string, bool) {
 	slash := "/" + filepath.ToSlash(p.Filename())
 	needle := "/" + strings.Trim(parent, "/") + "/"
 
-	idx := strings.Index(slash, needle)
-	if idx < 0 {
+	_, rest, ok := strings.Cut(slash, needle)
+	if !ok {
 		return "", false
 	}
-	rest := slash[idx+len(needle):]
-	i := strings.Index(rest, "/")
-	if i < 0 {
+	seg, _, ok := strings.Cut(rest, "/")
+	if !ok {
 		return "", false
 	}
-	return rest[:i], true
+	return seg, true
 }

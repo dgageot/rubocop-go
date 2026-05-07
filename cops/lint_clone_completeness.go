@@ -87,9 +87,7 @@ func resolveRecvStruct(fn *ast.FuncDecl, info *types.Info) *types.Struct {
 // embedded structs) whose types are pointers, slices, or maps.
 func deepCopyFields(st *types.Struct) []string {
 	var names []string
-	for i := range st.NumFields() {
-		f := st.Field(i)
-
+	for f := range st.Fields() {
 		// If embedded struct, recurse into it.
 		if f.Embedded() {
 			if inner := embeddedStruct(f.Type()); inner != nil {

@@ -29,12 +29,7 @@ func (t TagOptions) Has(opt string) bool {
 //
 //	jsonOpts.HasAny("omitempty", "omitzero")
 func (t TagOptions) HasAny(opts ...string) bool {
-	for _, opt := range opts {
-		if t.Has(opt) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(opts, t.Has)
 }
 
 // IsSkipped reports whether the tag explicitly opts out (Name == "-"),
