@@ -116,7 +116,7 @@ func CompositeLitField(cl *ast.CompositeLit, key string) (ast.Expr, bool) {
 	return nil, false
 }
 
-// Receiver describes a function receiver. It is the data shape that
+// ReceiverInfo describes a function receiver. It is the data shape that
 // receiver-aware cops keep recomputing by hand.
 type ReceiverInfo struct {
 	Name      string // the bound name, e.g. "p" — empty for anonymous receivers
