@@ -6,10 +6,11 @@ import (
 	"go/token"
 	"testing"
 
-	"github.com/dgageot/rubocop-go/cop"
-	"github.com/dgageot/rubocop-go/runner"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/dgageot/rubocop-go/cop"
+	"github.com/dgageot/rubocop-go/runner"
 )
 
 func TestTextReporter_NoOffenses(t *testing.T) {

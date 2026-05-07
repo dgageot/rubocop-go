@@ -6,10 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dgageot/rubocop-go/cop"
-	"github.com/dgageot/rubocop-go/coptest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/dgageot/rubocop-go/cop"
+	"github.com/dgageot/rubocop-go/coptest"
 )
 
 // newProbe is a small helper that builds a cop.Func with a fixed Meta and
@@ -107,7 +108,7 @@ const D = "delta"
 const Untyped = iota
 `
 	var (
-		all     map[string]string
+		all      map[string]string
 		filtered map[string]string
 	)
 	probe := newProbe(func(p *cop.Pass) {
@@ -215,9 +216,9 @@ func (t *T) m() {
 }
 `
 	var (
-		matched     bool
-		mx, msel    string
-		mok         bool
+		matched  bool
+		mx, msel string
+		mok      bool
 	)
 	probe := newProbe(func(p *cop.Pass) {
 		p.ForEachAssign(func(a *ast.AssignStmt) {

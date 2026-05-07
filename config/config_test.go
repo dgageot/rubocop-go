@@ -5,10 +5,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/dgageot/rubocop-go/config"
-	"github.com/dgageot/rubocop-go/cop"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/dgageot/rubocop-go/config"
+	"github.com/dgageot/rubocop-go/cop"
 )
 
 func TestLoad_DefaultWhenMissing(t *testing.T) {

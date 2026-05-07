@@ -184,4 +184,3 @@ func IsNullarySig(typ *ast.FuncType, resultType string) bool {
 	id, ok := typ.Results.List[0].Type.(*ast.Ident)
 	return ok && id.Name == resultType
 }
-

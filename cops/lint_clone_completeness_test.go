@@ -3,10 +3,11 @@ package cops_test
 import (
 	"testing"
 
-	"github.com/dgageot/rubocop-go/coptest"
-	"github.com/dgageot/rubocop-go/cops"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/dgageot/rubocop-go/cops"
+	"github.com/dgageot/rubocop-go/coptest"
 )
 
 func TestLintCloneCompleteness_MissingField(t *testing.T) {

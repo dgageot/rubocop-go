@@ -6,8 +6,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/dgageot/rubocop-go/cop"
 	"gopkg.in/yaml.v3"
+
+	"github.com/dgageot/rubocop-go/cop"
 )
 
 // Config represents the top-level configuration.
