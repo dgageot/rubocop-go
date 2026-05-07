@@ -206,6 +206,7 @@ type Meta struct {
 // state across files.
 type Func struct {
 	Meta
+
 	// Scope, when non-nil, decides whether the cop runs on a given file.
 	// Returning false from Scope short-circuits the cop entirely; Run
 	// is not called and no offense can be produced.
