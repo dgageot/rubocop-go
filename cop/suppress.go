@@ -99,7 +99,7 @@ func parseDirective(comment, prefix string) ([]string, bool) {
 	if !ok {
 		return nil, false
 	}
-	if len(rest) > 0 && rest[0] != ' ' && rest[0] != '\t' {
+	if rest != "" && rest[0] != ' ' && rest[0] != '\t' {
 		// e.g. "//rubocop:disable-file" must not match prefix "//rubocop:disable"
 		// without a separator.
 		return nil, false
