@@ -22,7 +22,7 @@ func NewLintFmtPrint() *cop.Func {
 			p.ForEachCall(func(call *ast.CallExpr) {
 				if cop.IsCallTo(call, "fmt", "Print", "Println", "Printf") {
 					sel := call.Fun.(*ast.SelectorExpr)
-					p.Report(call, "fmt.%s in library code — use a logger instead", sel.Sel.Name)
+					p.Reportf(call, "fmt.%s in library code — use a logger instead", sel.Sel.Name)
 				}
 			})
 		},

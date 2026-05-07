@@ -21,7 +21,7 @@ func NewStyleEmptyFunc() *cop.Func {
 			if fn.Body == nil || len(fn.Body.List) > 0 {
 				return
 			}
-			p.ReportAt(fn.Pos(), fn.Name.End(),
+			p.ReportAtf(fn.Pos(), fn.Name.End(),
 				"function '%s' has an empty body", fn.Name.Name)
 		})
 	})

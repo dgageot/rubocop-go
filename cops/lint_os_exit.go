@@ -27,7 +27,7 @@ func NewLintOsExit() *cop.Func {
 					return true
 				}
 				if cop.IsCallTo(call, "os", "Exit") {
-					p.Report(call, "avoid os.Exit outside of main()")
+					p.Reportf(call, "avoid os.Exit outside of main()")
 				}
 				return true
 			})

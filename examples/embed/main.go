@@ -27,7 +27,7 @@ var MyCustomCop = cop.New(cop.Meta{
 			return
 		}
 		if fn.Type.Params != nil && len(fn.Type.Params.List) > 0 {
-			p.Report(fn.Name, "SayHello must take no arguments")
+			p.Reportf(fn.Name, "SayHello must take no arguments")
 		}
 	})
 })

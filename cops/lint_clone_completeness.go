@@ -48,7 +48,7 @@ func NewLintCloneCompleteness() *cop.Func {
 
 				for _, name := range needsCopy {
 					if !referenced[name] {
-						p.Report(fn.Name, "Clone() does not copy field '%s' (pointer/slice/map)", name)
+						p.Reportf(fn.Name, "Clone() does not copy field '%s' (pointer/slice/map)", name)
 					}
 				}
 			})

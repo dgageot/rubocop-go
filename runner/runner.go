@@ -19,8 +19,8 @@ import (
 
 const resetColor = "\033[0m"
 
-// write is a helper that silences errcheck for fmt output.
-func write(w io.Writer, format string, args ...any) {
+// writef is a helper that silences errcheck for fmt output.
+func writef(w io.Writer, format string, args ...any) {
 	_, _ = fmt.Fprintf(w, format, args...)
 }
 

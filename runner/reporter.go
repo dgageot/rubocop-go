@@ -47,41 +47,41 @@ func NewTextReporter(w io.Writer) *TextReporter {
 
 // Start prints the inspection banner.
 func (r *TextReporter) Start(numCops int) {
-	write(r.Out, "Inspecting Go files with %d cop(s)\n", numCops)
+	writef(r.Out, "Inspecting Go files with %d cop(s)\n", numCops)
 }
 
 // FileFinished prints a single progress character for the file.
 func (r *TextReporter) FileFinished(_ string, offenses []cop.Offense) {
 	if len(offenses) > 0 {
 		severity := maxSeverity(offenses)
-		write(r.Out, "%s%s%s", severity.Color(), severity.String(), resetColor)
+		writef(r.Out, "%s%s%s", severity.Color(), severity.String(), resetColor)
 	} else {
-		write(r.Out, ".")
+		writef(r.Out, ".")
 	}
 }
 
 // Finish prints the offense listing and a summary line.
 func (r *TextReporter) Finish(allOffenses []cop.Offense, filesInspected int) {
-	write(r.Out, "\n")
+	writef(r.Out, "\n")
 
 	if len(allOffenses) > 0 {
-		write(r.Out, "\nOffenses:\n\n")
+		writef(r.Out, "\nOffenses:\n\n")
 		for _, o := range allOffenses {
 			r.printOffense(o)
 		}
-		write(r.Out, "\n")
+		writef(r.Out, "\n")
 	}
 
 	if len(allOffenses) == 0 {
-		write(r.Out, "%d file(s) inspected, \033[32mno offenses\033[0m detected\n", filesInspected)
+		writef(r.Out, "%d file(s) inspected, \033[32mno offenses\033[0m detected\n", filesInspected)
 	} else {
-		write(r.Out, "%d file(s) inspected, %s%d offense(s)%s detected\n",
+		writef(r.Out, "%d file(s) inspected, %s%d offense(s)%s detected\n",
 			filesInspected, maxSeverity(allOffenses).Color(), len(allOffenses), resetColor)
 	}
 }
 
 func (r *TextReporter) printOffense(o cop.Offense) {
-	write(r.Out, "%s:%d:%d: %s%s%s: %s%s%s: %s\n",
+	writef(r.Out, "%s:%d:%d: %s%s%s: %s%s%s: %s\n",
 		o.Pos.Filename, o.Pos.Line, o.Pos.Column,
 		o.Severity.Color(), o.Severity.String(), resetColor,
 		o.Severity.Color(), o.CopName, resetColor,
@@ -91,13 +91,13 @@ func (r *TextReporter) printOffense(o cop.Offense) {
 	// Print source context.
 	line, err := readLine(o.Pos.Filename, o.Pos.Line)
 	if err == nil {
-		write(r.Out, "%s\n", line)
+		writef(r.Out, "%s\n", line)
 		underline := strings.Repeat(" ", o.Pos.Column-1)
 		length := o.End.Column - o.Pos.Column
 		if length <= 0 {
 			length = 1
 		}
-		write(r.Out, "%s%s%s%s\n", underline, o.Severity.Color(), strings.Repeat("^", length), resetColor)
+		writef(r.Out, "%s%s%s%s\n", underline, o.Severity.Color(), strings.Repeat("^", length), resetColor)
 	}
 }
 
@@ -158,7 +158,7 @@ func (r *JSONReporter) Finish(allOffenses []cop.Offense, filesInspected int) {
 	enc := json.NewEncoder(r.Out)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(out); err != nil {
-		write(r.Out, "json encode error: %v\n", err)
+		writef(r.Out, "json encode error: %v\n", err)
 	}
 }
 

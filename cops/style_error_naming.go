@@ -36,7 +36,7 @@ func NewStyleErrorNaming() *cop.Func {
 
 			// The last LHS variable should be "err" or start with "err".
 			if !strings.HasPrefix(strings.ToLower(ident.Name), "err") {
-				p.Report(ident, "error variable '%s' should be named 'err' or start with 'err'", ident.Name)
+				p.Reportf(ident, "error variable '%s' should be named 'err' or start with 'err'", ident.Name)
 			}
 		})
 	})

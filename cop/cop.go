@@ -100,16 +100,16 @@ type Pass struct {
 	offenses []Offense
 }
 
-// Report records an offense covering the source span of the AST node n.
+// Reportf records an offense covering the source span of the AST node n.
 // The message is formatted with fmt.Sprintf semantics.
-func (p *Pass) Report(n ast.Node, format string, args ...any) {
-	p.ReportAt(n.Pos(), n.End(), format, args...)
+func (p *Pass) Reportf(n ast.Node, format string, args ...any) {
+	p.ReportAtf(n.Pos(), n.End(), format, args...)
 }
 
-// ReportAt records an offense covering the half-open [pos, end) range.
+// ReportAtf records an offense covering the half-open [pos, end) range.
 // Use it when you want a span narrower or wider than an ast.Node naturally
 // covers.
-func (p *Pass) ReportAt(pos, end token.Pos, format string, args ...any) {
+func (p *Pass) ReportAtf(pos, end token.Pos, format string, args ...any) {
 	msg := format
 	if len(args) > 0 {
 		msg = fmt.Sprintf(format, args...)
@@ -135,7 +135,7 @@ func (p *Pass) ReportMissing(anchor ast.Node, format string, names []string) {
 	}
 	sorted := append([]string(nil), names...)
 	slices.Sort(sorted)
-	p.Report(anchor, format, strings.Join(sorted, ", "))
+	p.Reportf(anchor, format, strings.Join(sorted, ", "))
 }
 
 // Offenses returns the offenses accumulated so far on this pass.
@@ -181,7 +181,7 @@ type Cop interface {
 	// Severity returns the default severity for offenses reported by this cop.
 	Severity() Severity
 
-	// Check inspects a file and reports offenses via p.Report.
+	// Check inspects a file and reports offenses via p.Reportf.
 	Check(p *Pass)
 }
 
