@@ -4,7 +4,6 @@ import (
 	"go/ast"
 	"go/token"
 	"reflect"
-	"slices"
 	"strconv"
 	"strings"
 )
@@ -44,6 +43,128 @@ func (p *Pass) ForEachFunc(fn func(*ast.FuncDecl)) {
 			fn(fd)
 		}
 	}
+}
+
+// FuncDecl returns the top-level *ast.FuncDecl named name, or nil if no
+// such declaration exists in the file. Methods (functions with a receiver)
+// are skipped — name lookups would otherwise be ambiguous, and the helper
+// is meant for the recurring "anchor a diagnostic on the dispatch function"
+// pattern where the target is always a plain function.
+//
+//	anchor := ast.Node(p.File.Name)
+//	if fn := p.FuncDecl("versions"); fn != nil {
+//	    anchor = fn.Name
+//	}
+func (p *Pass) FuncDecl(name string) *ast.FuncDecl {
+	for _, decl := range p.File.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || fd.Recv != nil || fd.Name == nil {
+			continue
+		}
+		if fd.Name.Name == name {
+			return fd
+		}
+	}
+	return nil
+}
+
+// StructType returns the *ast.TypeSpec and *ast.StructType for the
+// top-level type declaration named name, or (nil, nil) if no such struct
+// exists in the file. Useful for "find the schema struct then iterate its
+// fields" cops:
+//
+//	ts, st := p.StructType("HooksConfig")
+//	if ts == nil { return }
+//	for _, f := range st.Fields.List { ... }
+func (p *Pass) StructType(name string) (*ast.TypeSpec, *ast.StructType) {
+	var (
+		ts *ast.TypeSpec
+		st *ast.StructType
+	)
+	ForEachStructIn(p.File, func(t *ast.TypeSpec, s *ast.StructType) {
+		if t.Name != nil && t.Name.Name == name {
+			ts, st = t, s
+		}
+	})
+	return ts, st
+}
+
+// PointerReceiverMethods returns the set of type names T for which the
+// file declares `func (*T) name(...)`. Use it for syntactic
+// interface-satisfaction checks ("does X implement SessionScoped?")
+// without invoking the type checker:
+//
+//	impls := p.PointerReceiverMethods("GetSessionID")
+//	if !impls[typeName] { /* missing */ }
+//
+// Methods with a value receiver, or with no usable receiver type, are
+// excluded.
+func (p *Pass) PointerReceiverMethods(name string) map[string]bool {
+	return p.methodReceivers(name, true)
+}
+
+// ValueReceiverMethods is the value-receiver counterpart of
+// [Pass.PointerReceiverMethods].
+func (p *Pass) ValueReceiverMethods(name string) map[string]bool {
+	return p.methodReceivers(name, false)
+}
+
+func (p *Pass) methodReceivers(name string, ptr bool) map[string]bool {
+	out := map[string]bool{}
+	p.ForEachFunc(func(fn *ast.FuncDecl) {
+		if fn.Name == nil || fn.Name.Name != name {
+			return
+		}
+		r, ok := Receiver(fn)
+		if !ok || r.IsPointer != ptr {
+			return
+		}
+		out[r.TypeName] = true
+	})
+	return out
+}
+
+// FirstMethodCall returns the first CallExpr in the file whose callee
+// selector ends with method, or nil when no such call exists. Use it for
+// the recurring "anchor on the first dispatch call, fall back to the
+// package clause" pattern:
+//
+//	var anchor ast.Node = p.File.Name
+//	if call := p.FirstMethodCall("RegisterBuiltin"); call != nil {
+//	    anchor = call
+//	}
+func (p *Pass) FirstMethodCall(method string) *ast.CallExpr {
+	var found *ast.CallExpr
+	ast.Inspect(p.File, func(n ast.Node) bool {
+		if found != nil {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == method {
+			found = call
+		}
+		return true
+	})
+	return found
+}
+
+// FieldNames returns the comma-separated list of identifiers declared by
+// f, suitable for diagnostic messages. Anonymous (embedded) fields fall
+// back to the placeholder "<embedded>".
+//
+//	p.Report(field.Tag, "field %s ...", cop.FieldNames(field))
+func FieldNames(f *ast.Field) string {
+	if len(f.Names) == 0 {
+		return "<embedded>"
+	}
+	names := make([]string, 0, len(f.Names))
+	for _, n := range f.Names {
+		names = append(names, n.Name)
+	}
+	return strings.Join(names, ", ")
 }
 
 // ForEachImport calls fn for every import in the file.
@@ -108,15 +229,25 @@ func (p *Pass) ForEachStructField(fn func(*ast.TypeSpec, *ast.Field, reflect.Str
 			return
 		}
 		for _, f := range st.Fields.List {
-			fn(ts, f, fieldTag(f))
+			fn(ts, f, FieldTag(f))
 		}
 	})
 }
 
-// fieldTag unquotes f.Tag.Value as a reflect.StructTag. Returns the zero
-// value when the field has no tag or the tag literal cannot be unquoted.
-func fieldTag(f *ast.Field) reflect.StructTag {
-	if f.Tag == nil {
+// FieldTag unquotes f.Tag.Value as a [reflect.StructTag]. Returns the
+// zero value when the field has no tag or the tag literal cannot be
+// unquoted.
+//
+// Use it together with [Pass.StructType] when you want to walk a
+// specific struct's fields manually:
+//
+//	ts, st := p.StructType("HooksConfig")
+//	for _, f := range st.Fields.List {
+//	    opts, _ := cop.ParseTagOptions(cop.FieldTag(f), "json")
+//	    ...
+//	}
+func FieldTag(f *ast.Field) reflect.StructTag {
+	if f == nil || f.Tag == nil {
 		return ""
 	}
 	raw, err := strconv.Unquote(f.Tag.Value)
@@ -249,23 +380,6 @@ func forEachStringConst(file *ast.File, pred func(name string) bool, fn func(nam
 			}
 		}
 	}
-}
-
-// IsCallTo reports whether call is a selector call to one of the given names
-// on the package identifier pkg, e.g. IsCallTo(call, "fmt", "Println", "Printf").
-//
-// Note: this is a syntactic check on identifiers; if the cop has type info
-// available, prefer the type-aware path.
-func IsCallTo(call *ast.CallExpr, pkg string, names ...string) bool {
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return false
-	}
-	ident, ok := sel.X.(*ast.Ident)
-	if !ok || ident.Name != pkg {
-		return false
-	}
-	return slices.Contains(names, sel.Sel.Name)
 }
 
 // ImportPath returns the unquoted import path of an *ast.ImportSpec.

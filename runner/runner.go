@@ -133,6 +133,9 @@ func (r *Runner) runCops(fset *token.FileSet, file *ast.File, info *types.Info, 
 	var offenses []cop.Offense
 	for _, c := range r.Cops {
 		p := &cop.Pass{Cop: c, FileSet: fset, File: file, Info: info, Package: pkg}
+		if s, ok := c.(cop.Scoped); ok && !s.InScope(p) {
+			continue
+		}
 		if sev, ok := r.Config.SeverityFor(c.Name()); ok {
 			p.SeverityOverride = &sev
 		}

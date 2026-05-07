@@ -7,61 +7,55 @@ import (
 	"github.com/dgageot/rubocop-go/cop"
 )
 
-// LintCloneCompleteness checks that Clone() methods copy every pointer, slice,
-// and map field of the receiver struct. When a new field is added to a struct
-// but the Clone() method is not updated, the shallow copy can lead to shared
-// backing data and subtle mutation or data-race bugs.
-type LintCloneCompleteness struct {
-	cop.Meta
-}
-
 func init() { cop.Register(NewLintCloneCompleteness()) }
 
-// NewLintCloneCompleteness returns a fully configured LintCloneCompleteness cop.
-func NewLintCloneCompleteness() *LintCloneCompleteness {
-	return &LintCloneCompleteness{Meta: cop.Meta{
-		CopName:     "Lint/CloneCompleteness",
-		CopDesc:     "Clone() must handle all pointer/slice/map fields",
-		CopSeverity: cop.Error,
-	}}
-}
-
-// NeedsTypes opts the cop into type information.
-func (*LintCloneCompleteness) NeedsTypes() bool { return true }
-
-// Check inspects Clone() methods for missing field copies.
-func (c *LintCloneCompleteness) Check(p *cop.Pass) {
-	if p.Info == nil {
-		return
-	}
-
-	p.ForEachFunc(func(fn *ast.FuncDecl) {
-		if fn.Recv == nil || fn.Name.Name != "Clone" || fn.Body == nil {
-			return
-		}
-
-		// Resolve the receiver's underlying struct type, unwrapping pointers.
-		recvType := resolveRecvStruct(fn, p.Info)
-		if recvType == nil {
-			return
-		}
-
-		// Collect all fields that need deep copying (pointer, slice, map),
-		// including fields from embedded structs (flattened).
-		needsCopy := deepCopyFields(recvType)
-		if len(needsCopy) == 0 {
-			return
-		}
-
-		// Collect field names referenced in the Clone body.
-		referenced := referencedFields(fn.Body)
-
-		for _, name := range needsCopy {
-			if !referenced[name] {
-				p.Report(fn.Name, "Clone() does not copy field '%s' (pointer/slice/map)", name)
+// NewLintCloneCompleteness returns a cop that checks Clone() methods copy
+// every pointer, slice, and map field of the receiver struct. When a new
+// field is added to a struct but the Clone() method is not updated, the
+// shallow copy can lead to shared backing data and subtle mutation or
+// data-race bugs.
+func NewLintCloneCompleteness() *cop.Func {
+	return &cop.Func{
+		Meta: cop.Meta{
+			Name:        "Lint/CloneCompleteness",
+			Description: "Clone() must handle all pointer/slice/map fields",
+			Severity:    cop.Error,
+		},
+		Types: true,
+		Run: func(p *cop.Pass) {
+			if p.Info == nil {
+				return
 			}
-		}
-	})
+
+			p.ForEachFunc(func(fn *ast.FuncDecl) {
+				if fn.Recv == nil || fn.Name.Name != "Clone" || fn.Body == nil {
+					return
+				}
+
+				// Resolve the receiver's underlying struct type, unwrapping pointers.
+				recvType := resolveRecvStruct(fn, p.Info)
+				if recvType == nil {
+					return
+				}
+
+				// Collect all fields that need deep copying (pointer, slice, map),
+				// including fields from embedded structs (flattened).
+				needsCopy := deepCopyFields(recvType)
+				if len(needsCopy) == 0 {
+					return
+				}
+
+				// Collect field names referenced in the Clone body.
+				referenced := referencedFields(fn.Body)
+
+				for _, name := range needsCopy {
+					if !referenced[name] {
+						p.Report(fn.Name, "Clone() does not copy field '%s' (pointer/slice/map)", name)
+					}
+				}
+			})
+		},
+	}
 }
 
 // resolveRecvStruct returns the *types.Struct underlying the receiver of fn,

@@ -1,11 +1,28 @@
 // Package cop defines the core types for writing custom cops.
 //
 // A cop is a rule that inspects Go source code and reports offenses.
-// To write a custom cop:
+// The recommended way to define one is to build a [Func]:
 //
-//  1. Create a struct that implements the Cop interface
-//  2. Register it with cop.Register in an init() function (optional)
-//  3. Or pass it explicitly to runner.New
+//	var LintOsExit = cop.New(cop.Meta{
+//	    Name:        "Lint/OsExit",
+//	    Description: "Avoid os.Exit outside of main()",
+//	    Severity:    cop.Warning,
+//	}, func(p *cop.Pass) {
+//	    p.ForEachFunc(func(fn *ast.FuncDecl) { ... })
+//	})
+//
+// To restrict a cop to a subset of files, attach a [CheckScope] — the
+// runner skips the cop entirely on out-of-scope files:
+//
+//	var TUIViewPurity = &cop.Func{
+//	    Meta:  cop.Meta{Name: "Lint/TUIViewPurity", ...},
+//	    Scope: cop.UnderDir("pkg/tui"),
+//	    Run:   func(p *cop.Pass) { ... },
+//	}
+//
+// You can also implement [Cop] yourself if your cop needs to keep state
+// across calls; in that case, embed [Meta] for the field-style metadata
+// and provide your own Name/Description/Severity/Check methods.
 package cop
 
 import (
@@ -13,6 +30,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -103,6 +121,23 @@ func (p *Pass) ReportAt(pos, end token.Pos, format string, args ...any) {
 	p.offenses = append(p.offenses, o)
 }
 
+// ReportMissing is a convenience for the recurring "X is missing entries
+// for: a, b, c" diagnostic emitted by dispatch-table cops. names is sorted
+// (stable, in place on a defensive copy) and joined with ", " before being
+// substituted into format. The method is a no-op when names is empty, so
+// callers can collect candidates unconditionally and let the helper decide
+// whether to emit anything.
+//
+//	p.ReportMissing(anchor, "registry is missing entries for: %s", missing)
+func (p *Pass) ReportMissing(anchor ast.Node, format string, names []string) {
+	if len(names) == 0 {
+		return
+	}
+	sorted := append([]string(nil), names...)
+	slices.Sort(sorted)
+	p.Report(anchor, format, strings.Join(sorted, ", "))
+}
+
 // Offenses returns the offenses accumulated so far on this pass.
 func (p *Pass) Offenses() []Offense {
 	return p.offenses
@@ -150,33 +185,81 @@ type Cop interface {
 	Check(p *Pass)
 }
 
-// Meta carries the static metadata of a cop. Embed it in your cop struct to
-// satisfy Name(), Description() and Severity() without writing the three
-// methods by hand:
+// Meta carries the static metadata of a cop. It is plain data with no
+// methods of its own — wrap it in a [Func] (or your own struct that
+// supplies the Cop interface methods) to obtain a runnable cop.
 //
-//	type LintOsExit struct {
-//	    cop.Meta
-//	}
-//
-//	var _ = cop.Register(&LintOsExit{Meta: cop.Meta{
-//	    CopName:     "Lint/OsExit",
-//	    CopDesc:     "Avoid os.Exit outside of main()",
-//	    CopSeverity: cop.Warning,
-//	}})
+//	var LintOsExit = cop.New(cop.Meta{
+//	    Name:        "Lint/OsExit",
+//	    Description: "Avoid os.Exit outside of main()",
+//	    Severity:    cop.Warning,
+//	}, func(p *cop.Pass) { ... })
 type Meta struct {
-	CopName     string
-	CopDesc     string
-	CopSeverity Severity
+	Name        string
+	Description string
+	Severity    Severity
 }
 
-// Name implements Cop.
-func (m Meta) Name() string { return m.CopName }
+// Func is the standard way to build a cop: provide [Meta], an optional
+// [CheckScope], and a check function. Most project-specific rules need
+// nothing beyond a Func — define a struct only if your cop must keep
+// state across files.
+type Func struct {
+	Meta
+	// Scope, when non-nil, decides whether the cop runs on a given file.
+	// Returning false from Scope short-circuits the cop entirely; Run
+	// is not called and no offense can be produced.
+	Scope CheckScope
+	// Types, when true, opts the cop into type information. The runner
+	// type-checks the package and populates p.Info / p.Package on the
+	// Pass passed to Run. This is the [Func]-based equivalent of
+	// implementing [TypeAware] on a custom struct.
+	Types bool
+	// Run is the check function. It is the production-side equivalent of
+	// the Check method on Cop.
+	Run func(*Pass)
+}
 
-// Description implements Cop.
-func (m Meta) Description() string { return m.CopDesc }
+// New is shorthand for an unscoped Func.
+func New(meta Meta, run func(*Pass)) *Func {
+	return &Func{Meta: meta, Run: run}
+}
 
-// Severity implements Cop.
-func (m Meta) Severity() Severity { return m.CopSeverity }
+// Name implements [Cop].
+func (f *Func) Name() string { return f.Meta.Name }
+
+// Description implements [Cop].
+func (f *Func) Description() string { return f.Meta.Description }
+
+// Severity implements [Cop].
+func (f *Func) Severity() Severity { return f.Meta.Severity }
+
+// Check implements [Cop].
+func (f *Func) Check(p *Pass) {
+	if f.Run != nil {
+		f.Run(p)
+	}
+}
+
+// InScope implements [Scoped]. A nil Scope matches every file.
+func (f *Func) InScope(p *Pass) bool {
+	return f.Scope == nil || f.Scope(p)
+}
+
+// NeedsTypes implements [TypeAware].
+func (f *Func) NeedsTypes() bool { return f.Types }
+
+// Scoped is an optional interface a Cop can implement to skip the entire
+// file before Check is called. The runner consults InScope first; if it
+// returns false, Check is not invoked and the cop produces no offenses
+// for that file.
+//
+// Use it (transitively, via [Func.Scope] and the helpers in scope.go) to
+// declare scope filters once on the cop instead of repeating them at the
+// top of every Check function.
+type Scoped interface {
+	InScope(*Pass) bool
+}
 
 // TypeAware is an optional interface that a Cop can implement to request
 // type information. When a cop implements TypeAware and NeedsTypes returns

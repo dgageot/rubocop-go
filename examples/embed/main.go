@@ -6,6 +6,7 @@ package main
 
 import (
 	"fmt"
+	"go/ast"
 	"os"
 
 	"github.com/dgageot/rubocop-go/config"
@@ -14,14 +15,30 @@ import (
 	"github.com/dgageot/rubocop-go/runner"
 )
 
+// MyCustomCop is a project-specific rule defined inline as a cop.Func.
+// No struct, no constructor — the meta + check live next to each other.
+var MyCustomCop = cop.New(cop.Meta{
+	Name:        "Style/SayHello",
+	Description: "Functions named SayHello must take no arguments",
+	Severity:    cop.Convention,
+}, func(p *cop.Pass) {
+	p.ForEachFunc(func(fn *ast.FuncDecl) {
+		if fn.Name.Name != "SayHello" {
+			return
+		}
+		if fn.Type.Params != nil && len(fn.Type.Params.List) > 0 {
+			p.Report(fn.Name, "SayHello must take no arguments")
+		}
+	})
+})
+
 func main() {
 	// Build the set of cops to run yourself. Mix and match built-in cops with
 	// your own without going through cop.Register / cop.All.
 	mine := []cop.Cop{
 		cops.NewLintOsExit(),
 		cops.NewStyleErrorNaming(),
-		// Add custom cops here:
-		// &mypkg.MyCustomCop{...},
+		MyCustomCop,
 	}
 
 	paths := os.Args[1:]

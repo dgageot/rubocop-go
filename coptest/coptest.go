@@ -31,6 +31,9 @@ func Run(t *testing.T, c cop.Cop, src string) []cop.Offense {
 
 // RunNamed is like Run but lets you choose the synthetic filename. Useful
 // when a cop's logic depends on the path (for instance, package layout).
+//
+// Cops that implement [cop.Scoped] are honored — RunNamed returns no
+// offenses when InScope reports false, mirroring the production runner.
 func RunNamed(t *testing.T, c cop.Cop, filename, src string) []cop.Offense {
 	t.Helper()
 
@@ -41,6 +44,9 @@ func RunNamed(t *testing.T, c cop.Cop, filename, src string) []cop.Offense {
 	}
 
 	p := &cop.Pass{Cop: c, FileSet: fset, File: file}
+	if s, ok := c.(cop.Scoped); ok && !s.InScope(p) {
+		return nil
+	}
 	c.Check(p)
 	return p.Offenses()
 }
@@ -50,6 +56,9 @@ func RunNamed(t *testing.T, c cop.Cop, filename, src string) []cop.Offense {
 //
 // Type-check errors (such as unresolved imports) are silently ignored so the
 // cop still runs over partial type info.
+//
+// Cops that implement [cop.Scoped] are honored — RunTyped returns no
+// offenses when InScope reports false, mirroring the production runner.
 func RunTyped(t *testing.T, c cop.Cop, src string) []cop.Offense {
 	t.Helper()
 
@@ -75,6 +84,9 @@ func RunTyped(t *testing.T, c cop.Cop, src string) []cop.Offense {
 	pkg, _ := cfg.Check(dir, fset, []*ast.File{file}, info)
 
 	p := &cop.Pass{Cop: c, FileSet: fset, File: file, Info: info, Package: pkg}
+	if s, ok := c.(cop.Scoped); ok && !s.InScope(p) {
+		return nil
+	}
 	c.Check(p)
 	return p.Offenses()
 }

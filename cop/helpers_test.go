@@ -12,19 +12,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// pathProbe is a tiny cop used to exercise the path helpers on a *cop.Pass.
-type pathProbe struct {
-	cop.Meta
-	check func(*cop.Pass)
-}
-
-func (p *pathProbe) Check(pass *cop.Pass) { p.check(pass) }
-
-func newProbe(check func(*cop.Pass)) *pathProbe {
-	return &pathProbe{
-		Meta:  cop.Meta{CopName: "Test/Probe", CopDesc: "probe", CopSeverity: cop.Convention},
-		check: check,
-	}
+// newProbe is a small helper that builds a cop.Func with a fixed Meta and
+// the caller-provided Check function. Keeps the test code focused on the
+// helper under test rather than on the surrounding plumbing.
+func newProbe(check func(*cop.Pass)) *cop.Func {
+	return cop.New(cop.Meta{
+		Name:        "Test/Probe",
+		Description: "probe",
+		Severity:    cop.Convention,
+	}, check)
 }
 
 func TestFileMatches(t *testing.T) {
