@@ -5,8 +5,7 @@ import (
 	"os"
 
 	"github.com/dgageot/rubocop-go/config"
-	"github.com/dgageot/rubocop-go/cop"
-	_ "github.com/dgageot/rubocop-go/cops" // register built-in cops
+	"github.com/dgageot/rubocop-go/cops"
 	"github.com/dgageot/rubocop-go/runner"
 )
 
@@ -22,7 +21,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	r := runner.New(cop.All(), cfg, os.Stdout)
+	r := runner.New(cops.All(), cfg, os.Stdout)
 
 	offenseCount, err := r.Run(paths)
 	if err != nil {

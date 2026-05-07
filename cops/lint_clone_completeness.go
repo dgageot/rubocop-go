@@ -7,8 +7,6 @@ import (
 	"github.com/dgageot/rubocop-go/cop"
 )
 
-func init() { cop.Register(NewLintCloneCompleteness()) }
-
 // NewLintCloneCompleteness returns a cop that checks Clone() methods copy
 // every pointer, slice, and map field of the receiver struct. When a new
 // field is added to a struct but the Clone() method is not updated, the

@@ -6,8 +6,6 @@ import (
 	"github.com/dgageot/rubocop-go/cop"
 )
 
-func init() { cop.Register(NewLintOsExit()) }
-
 // NewLintOsExit returns a cop that flags os.Exit() calls outside the main
 // function. Calling os.Exit bypasses deferred functions and makes code
 // harder to test.

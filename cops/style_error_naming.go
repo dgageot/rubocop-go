@@ -8,8 +8,6 @@ import (
 	"github.com/dgageot/rubocop-go/cop"
 )
 
-func init() { cop.Register(NewStyleErrorNaming()) }
-
 // NewStyleErrorNaming returns a cop that enforces the err/Err naming
 // convention for error variables. In Go, error variables returned from
 // function calls should be named "err" or start with "err" (e.g.

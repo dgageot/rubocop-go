@@ -6,8 +6,6 @@ import (
 	"github.com/dgageot/rubocop-go/cop"
 )
 
-func init() { cop.Register(NewLintFmtPrint()) }
-
 // NewLintFmtPrint returns a cop that flags fmt.Print/Println/Printf calls
 // in non-main packages. These are usually debugging leftovers that should
 // be replaced with proper logging.

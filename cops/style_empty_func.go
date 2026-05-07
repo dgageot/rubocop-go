@@ -6,8 +6,6 @@ import (
 	"github.com/dgageot/rubocop-go/cop"
 )
 
-func init() { cop.Register(NewStyleEmptyFunc()) }
-
 // NewStyleEmptyFunc returns a cop that flags empty function bodies. An
 // empty function body might indicate unfinished code or a missing
 // implementation.
