@@ -259,7 +259,7 @@ func (f *Func) NeedsTypes() bool { return f.Types }
 // declare scope filters once on the cop instead of repeating them at the
 // top of every Check function.
 type Scoped interface {
-	InScope(*Pass) bool
+	InScope(p *Pass) bool
 }
 
 // TypeAware is an optional interface that a Cop can implement to request
