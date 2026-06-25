@@ -15,6 +15,7 @@ import (
 
 	"github.com/dgageot/rubocop-go/config"
 	"github.com/dgageot/rubocop-go/cop"
+	"github.com/dgageot/rubocop-go/prog"
 )
 
 const resetColor = "\033[0m"
@@ -29,6 +30,12 @@ type Runner struct {
 	Cops     []cop.Cop
 	Config   *config.Config
 	Reporter Reporter
+
+	// ProgramCops are whole-program, inter-procedural cops. Unlike Cops,
+	// which the runner invokes once per file, each ProgramCop is invoked
+	// once against the whole loaded program. They are run only when the
+	// runner is able to load the program with go/packages.
+	ProgramCops []prog.Cop
 
 	// needsTypes is true when at least one cop requests type information.
 	needsTypes bool
@@ -58,6 +65,17 @@ func New(cops []cop.Cop, cfg *config.Config, out io.Writer) *Runner {
 		}
 	}
 
+	return r
+}
+
+// WithProgramCops registers whole-program cops on the runner, filtered by
+// config the same way file cops are. It returns the runner for chaining.
+func (r *Runner) WithProgramCops(cops []prog.Cop) *Runner {
+	for _, c := range cops {
+		if r.Config.IsEnabled(c.Name()) {
+			r.ProgramCops = append(r.ProgramCops, c)
+		}
+	}
 	return r
 }
 
@@ -108,6 +126,13 @@ func (r *Runner) Run(paths []string) (int, error) {
 			r.Reporter.FileFinished(path, fileOffenses)
 			allOffenses = append(allOffenses, fileOffenses...)
 		}
+	}
+
+	// Whole-program cops run once over the loaded program rather than once
+	// per file. They are independent of the file loop above.
+	if len(r.ProgramCops) > 0 {
+		programOffenses := r.runProgramCops(paths)
+		allOffenses = append(allOffenses, programOffenses...)
 	}
 
 	// Sort offenses by file, then line, then column.
@@ -165,6 +190,86 @@ func (r *Runner) parseFiles(fset *token.FileSet, paths []string) ([]*ast.File, [
 		parsedPath = append(parsedPath, p)
 	}
 	return parsed, parsedPath, len(parsed) > 0
+}
+
+// runProgramCops loads the whole program once and runs every registered
+// whole-program cop against it. Offenses are passed through the same
+// suppression machinery as file cops, resolved per-file from the offense's
+// own position. A load failure is reported as a diagnostic line and yields
+// no offenses — whole-program analysis is best-effort, never fatal.
+func (r *Runner) runProgramCops(paths []string) []cop.Offense {
+	patterns := loadPatterns(paths)
+	program, err := prog.Load(patterns...)
+	if err != nil {
+		writef(os.Stderr, "whole-program analysis skipped: %v\n", err)
+		return nil
+	}
+
+	var raw []cop.Offense
+	for _, c := range r.ProgramCops {
+		p := &prog.Pass{Cop: c, Program: program}
+		if sev, ok := r.Config.SeverityFor(c.Name()); ok {
+			p.SeverityOverride = &sev
+		}
+		c.Check(p)
+		raw = append(raw, p.Offenses()...)
+	}
+
+	return r.filterSuppressed(program.Fset, raw)
+}
+
+// filterSuppressed drops whole-program offenses that fall on a line carrying
+// a //rubocop:disable directive for the offending cop. Suppression data is
+// scanned lazily per source file and cached, mirroring the per-file cop path.
+func (r *Runner) filterSuppressed(fset *token.FileSet, offenses []cop.Offense) []cop.Offense {
+	cache := map[string]*cop.Suppressions{}
+	suppressionsFor := func(filename string) *cop.Suppressions {
+		if s, ok := cache[filename]; ok {
+			return s
+		}
+		var s *cop.Suppressions
+		if f, err := parser.ParseFile(fset, filename, nil, parser.ParseComments); err == nil {
+			s = cop.ScanSuppressions(fset, f)
+		}
+		cache[filename] = s
+		return s
+	}
+
+	var kept []cop.Offense
+	for _, o := range offenses {
+		if s := suppressionsFor(o.Pos.Filename); s != nil && s.Suppresses(o.CopName, o.Pos.Line) {
+			continue
+		}
+		kept = append(kept, o)
+	}
+	return kept
+}
+
+// loadPatterns turns the CLI's file/dir paths into go/packages load
+// patterns. Directories become "<dir>/..." so the whole subtree is loaded;
+// individual .go files are mapped to their containing directory (a package
+// must be loaded as a unit). Duplicates are removed while preserving order.
+func loadPatterns(paths []string) []string {
+	if len(paths) == 0 {
+		return []string{"./..."}
+	}
+	seen := map[string]bool{}
+	var patterns []string
+	add := func(p string) {
+		if !seen[p] {
+			seen[p] = true
+			patterns = append(patterns, p)
+		}
+	}
+	for _, p := range paths {
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			add("./" + strings.TrimPrefix(filepath.Dir(p), "./"))
+			continue
+		}
+		trimmed := strings.TrimSuffix(p, "/")
+		add(trimmed + "/...")
+	}
+	return patterns
 }
 
 // typeCheck performs type-checking on a set of parsed files from the same directory.
