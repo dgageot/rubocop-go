@@ -11,14 +11,12 @@
 //	    p.ForEachFunc(func(fn *ast.FuncDecl) { ... })
 //	})
 //
-// To restrict a cop to a subset of files, attach a [CheckScope] — the
-// runner skips the cop entirely on out-of-scope files:
+// To restrict a cop to a subset of files, pass [WithScope]:
 //
-//	var TUIViewPurity = &cop.Func{
-//	    Meta:  cop.Meta{Name: "Lint/TUIViewPurity", ...},
-//	    Scope: cop.UnderDir("pkg/tui"),
-//	    Run:   func(p *cop.Pass) { ... },
-//	}
+//	var TUIViewPurity = cop.New(cop.Meta{Name: "Lint/TUIViewPurity", ...},
+//	    func(p *cop.Pass) { ... },
+//	    cop.WithScope(cop.UnderDir("pkg/tui")),
+//	)
 //
 // You can also implement [Cop] yourself if your cop needs to keep state
 // across calls; in that case, embed [Meta] for the field-style metadata
@@ -232,9 +230,26 @@ type Func struct {
 	Run func(*Pass)
 }
 
-// New is shorthand for an unscoped Func.
-func New(meta Meta, run func(*Pass)) *Func {
-	return &Func{Meta: meta, Run: run}
+// FuncOption configures a Func created with [New].
+type FuncOption func(*Func)
+
+// WithScope restricts a Func to files matching scope.
+func WithScope(scope CheckScope) FuncOption {
+	return func(f *Func) { f.Scope = scope }
+}
+
+// WithTypes opts a Func into type information.
+func WithTypes() FuncOption {
+	return func(f *Func) { f.Types = true }
+}
+
+// New is shorthand for a Func.
+func New(meta Meta, run func(*Pass), opts ...FuncOption) *Func {
+	f := &Func{Meta: meta, Run: run}
+	for _, opt := range opts {
+		opt(f)
+	}
+	return f
 }
 
 // Name implements [Cop].

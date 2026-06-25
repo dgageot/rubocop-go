@@ -6,8 +6,7 @@ A Go source code analyzer inspired by [RuboCop](https://rubocop.org/). The goal 
 
 A cop is a piece of metadata (name, description, severity), an optional file
 scope, and a function that inspects a Go file and reports offenses. The
-recommended way to assemble one is `cop.New` (or a `cop.Func` literal when
-you need scope/types):
+recommended way to assemble one is `cop.New`:
 
 ```go
 var LintOsExit = cop.New(cop.Meta{
@@ -110,15 +109,13 @@ no `if !p.FileMatches(...) { return }` boilerplate at the top of every
 Check function:
 
 ```go
-var TUIViewPurity = &cop.Func{
-    Meta: cop.Meta{
-        Name:        "Lint/TUIViewPurity",
-        Description: "View() must not mutate the receiver",
-        Severity:    cop.Warning,
-    },
-    Scope: cop.UnderDir("pkg/tui"),
-    Run: func(p *cop.Pass) { /* ... */ },
-}
+var TUIViewPurity = cop.New(cop.Meta{
+    Name:        "Lint/TUIViewPurity",
+    Description: "View() must not mutate the receiver",
+    Severity:    cop.Warning,
+}, func(p *cop.Pass) {
+    /* ... */
+}, cop.WithScope(cop.UnderDir("pkg/tui")))
 ```
 
 The bundled scope helpers are:
@@ -144,14 +141,13 @@ Then `main.go` picks it up automatically via `cop.All()`.
 
 ### Type-aware cops
 
-For cops that need type information, set `Types: true` on a `cop.Func`:
+For cops that need type information, use `cop.WithTypes()`:
 
 ```go
-var LintCloneCompleteness = &cop.Func{
-    Meta:  cop.Meta{Name: "Lint/CloneCompleteness", ...},
-    Types: true,
-    Run:   func(p *cop.Pass) { /* p.Info and p.Package are populated */ },
-}
+var LintCloneCompleteness = cop.New(cop.Meta{Name: "Lint/CloneCompleteness", ...},
+    func(p *cop.Pass) { /* p.Info and p.Package are populated */ },
+    cop.WithTypes(),
+)
 ```
 
 (Or, for a hand-rolled struct, implement the `cop.TypeAware` interface
@@ -174,8 +170,9 @@ helpers for the recurring shapes:
   scope helpers above).
 - **Cross-file** — `Pass.ParseSibling(rel)` to read a sibling file,
   `Pass.ParseDir(rel, opts)` to scan a directory.
-- **Diagnostics** — `Pass.Report(node, fmt, ...)`,
-  `Pass.ReportAt(pos, end, fmt, ...)`,
+- **Diagnostics** — `Pass.Report(node, message)`,
+  `Pass.Reportf(node, fmt, ...)`, `Pass.ReportAt(pos, end, message)`,
+  `Pass.ReportAtf(pos, end, fmt, ...)`,
   `Pass.ReportMissing(anchor, fmt, names)` for the recurring "X is
   missing entries for: a, b, c" pattern.
 - **Match helpers** — `cop.IsCallTo`, `cop.CallTo` (returns the matched

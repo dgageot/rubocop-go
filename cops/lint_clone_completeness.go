@@ -13,47 +13,43 @@ import (
 // shallow copy can lead to shared backing data and subtle mutation or
 // data-race bugs.
 func NewLintCloneCompleteness() *cop.Func {
-	return &cop.Func{
-		Meta: cop.Meta{
-			Name:        "Lint/CloneCompleteness",
-			Description: "Clone() must handle all pointer/slice/map fields",
-			Severity:    cop.Error,
-		},
-		Types: true,
-		Run: func(p *cop.Pass) {
-			if p.Info == nil {
+	return cop.New(cop.Meta{
+		Name:        "Lint/CloneCompleteness",
+		Description: "Clone() must handle all pointer/slice/map fields",
+		Severity:    cop.Error,
+	}, func(p *cop.Pass) {
+		if p.Info == nil {
+			return
+		}
+
+		p.ForEachFunc(func(fn *ast.FuncDecl) {
+			if fn.Recv == nil || fn.Name.Name != "Clone" || fn.Body == nil {
 				return
 			}
 
-			p.ForEachFunc(func(fn *ast.FuncDecl) {
-				if fn.Recv == nil || fn.Name.Name != "Clone" || fn.Body == nil {
-					return
-				}
+			// Resolve the receiver's underlying struct type, unwrapping pointers.
+			recvType := resolveRecvStruct(fn, p.Info)
+			if recvType == nil {
+				return
+			}
 
-				// Resolve the receiver's underlying struct type, unwrapping pointers.
-				recvType := resolveRecvStruct(fn, p.Info)
-				if recvType == nil {
-					return
-				}
+			// Collect all fields that need deep copying (pointer, slice, map),
+			// including fields from embedded structs (flattened).
+			needsCopy := deepCopyFields(recvType)
+			if len(needsCopy) == 0 {
+				return
+			}
 
-				// Collect all fields that need deep copying (pointer, slice, map),
-				// including fields from embedded structs (flattened).
-				needsCopy := deepCopyFields(recvType)
-				if len(needsCopy) == 0 {
-					return
-				}
+			// Collect field names referenced in the Clone body.
+			referenced := referencedFields(fn.Body)
 
-				// Collect field names referenced in the Clone body.
-				referenced := referencedFields(fn.Body)
-
-				for _, name := range needsCopy {
-					if !referenced[name] {
-						p.Reportf(fn.Name, "Clone() does not copy field '%s' (pointer/slice/map)", name)
-					}
+			for _, name := range needsCopy {
+				if !referenced[name] {
+					p.Reportf(fn.Name, "Clone() does not copy field '%s' (pointer/slice/map)", name)
 				}
-			})
-		},
-	}
+			}
+		})
+	}, cop.WithTypes())
 }
 
 // resolveRecvStruct returns the *types.Struct underlying the receiver of fn,
