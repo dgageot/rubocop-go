@@ -155,7 +155,7 @@ func (p *Pass) FirstMethodCall(method string) *ast.CallExpr {
 // f, suitable for diagnostic messages. Anonymous (embedded) fields fall
 // back to the placeholder "<embedded>".
 //
-//	p.Report(field.Tag, "field %s ...", cop.FieldNames(field))
+//	p.Reportf(field.Tag, "field %s ...", cop.FieldNames(field))
 func FieldNames(f *ast.Field) string {
 	if len(f.Names) == 0 {
 		return "<embedded>"

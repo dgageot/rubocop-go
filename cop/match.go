@@ -50,7 +50,7 @@ func IsCallTo(call *ast.CallExpr, pkg string, names ...string) bool {
 // is a selector call "pkg.Name(...)" for one of the given names.
 //
 //	name, ok := cop.CallTo(call, "slog", "Debug", "Info", "Warn", "Error")
-//	if ok { p.Report(call, "prefer slog.%sContext", name) }
+//	if ok { p.Reportf(call, "prefer slog.%sContext", name) }
 func CallTo(call *ast.CallExpr, pkg string, names ...string) (string, bool) {
 	got, sel, ok := MatchSelector(call.Fun)
 	if !ok || got != pkg {

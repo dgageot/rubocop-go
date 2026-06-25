@@ -100,10 +100,26 @@ type Pass struct {
 	offenses []Offense
 }
 
+// Report records an offense covering the source span of the AST node n.
+func (p *Pass) Report(n ast.Node, message string) {
+	p.ReportAt(n.Pos(), n.End(), message)
+}
+
 // Reportf records an offense covering the source span of the AST node n.
 // The message is formatted with fmt.Sprintf semantics.
 func (p *Pass) Reportf(n ast.Node, format string, args ...any) {
 	p.ReportAtf(n.Pos(), n.End(), format, args...)
+}
+
+// ReportAt records an offense covering the half-open [pos, end) range.
+// Use it when you want a span narrower or wider than an ast.Node naturally
+// covers.
+func (p *Pass) ReportAt(pos, end token.Pos, message string) {
+	o := NewOffenseAt(p.Cop, p.FileSet, pos, end, message)
+	if p.SeverityOverride != nil {
+		o.Severity = *p.SeverityOverride
+	}
+	p.offenses = append(p.offenses, o)
 }
 
 // ReportAtf records an offense covering the half-open [pos, end) range.
@@ -114,11 +130,7 @@ func (p *Pass) ReportAtf(pos, end token.Pos, format string, args ...any) {
 	if len(args) > 0 {
 		msg = fmt.Sprintf(format, args...)
 	}
-	o := NewOffenseAt(p.Cop, p.FileSet, pos, end, msg)
-	if p.SeverityOverride != nil {
-		o.Severity = *p.SeverityOverride
-	}
-	p.offenses = append(p.offenses, o)
+	p.ReportAt(pos, end, msg)
 }
 
 // ReportMissing is a convenience for the recurring "X is missing entries
@@ -133,8 +145,7 @@ func (p *Pass) ReportMissing(anchor ast.Node, format string, names []string) {
 	if len(names) == 0 {
 		return
 	}
-	sorted := append([]string(nil), names...)
-	slices.Sort(sorted)
+	sorted := slices.Sorted(slices.Values(names))
 	p.Reportf(anchor, format, strings.Join(sorted, ", "))
 }
 
@@ -181,7 +192,7 @@ type Cop interface {
 	// Severity returns the default severity for offenses reported by this cop.
 	Severity() Severity
 
-	// Check inspects a file and reports offenses via p.Reportf.
+	// Check inspects a file and reports offenses via p.Report.
 	Check(p *Pass)
 }
 

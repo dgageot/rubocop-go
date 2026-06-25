@@ -83,7 +83,7 @@ var MyCop = cop.New(cop.Meta{
     Description: "Checks something useful",
     Severity:    cop.Convention,
 }, func(p *cop.Pass) {
-    // Inspect p.File and call p.Report(node, format, args...) on offenses.
+    // Inspect p.File and call p.Report(node, message) or p.Reportf(node, format, args...) on offenses.
 })
 
 func main() {
