@@ -306,12 +306,20 @@ func NewOffense(c Cop, fset *token.FileSet, n ast.Node, message string) Offense 
 // Use it when the natural span of an ast.Node is wider or narrower than what
 // you want to highlight.
 func NewOffenseAt(c Cop, fset *token.FileSet, pos, end token.Pos, message string) Offense {
+	return NewOffenseFor(c.Name(), c.Severity(), fset, pos, end, message)
+}
+
+// NewOffenseFor creates an offense from a cop's name and severity directly,
+// without a [Cop] value. Whole-program cops (which carry a different Check
+// signature than [Cop]) use it to produce offenses in the same vocabulary
+// as file-scoped cops.
+func NewOffenseFor(name string, sev Severity, fset *token.FileSet, pos, end token.Pos, message string) Offense {
 	return Offense{
 		Pos:      fset.Position(pos),
 		End:      fset.Position(end),
 		Message:  message,
-		CopName:  c.Name(),
-		Severity: c.Severity(),
+		CopName:  name,
+		Severity: sev,
 	}
 }
 
