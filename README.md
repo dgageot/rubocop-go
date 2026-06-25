@@ -30,6 +30,15 @@ var LintOsExit = cop.New(cop.Meta{
 | `Style/ErrorNaming` | Enforces error variable naming conventions |
 | `Style/EmptyFunc` | Detects empty function bodies |
 
+### Whole-program cops
+
+These run once over the entire loaded program rather than once per file,
+so they can answer inter-procedural, cross-package questions:
+
+| Cop | Description |
+|-----|-------------|
+| `Lint/ContextConnectivity` | Proves every `context.Context` derives from the program's root context |
+
 ## Usage
 
 ```sh
@@ -152,6 +161,61 @@ var LintCloneCompleteness = cop.New(cop.Meta{Name: "Lint/CloneCompleteness", ...
 
 (Or, for a hand-rolled struct, implement the `cop.TypeAware` interface
 with a `NeedsTypes() bool` method.)
+
+### Whole-program, inter-procedural cops
+
+Some questions cannot be answered one file — or even one package — at a
+time. "Does every `context.Context` consumed anywhere in the program
+derive from the single root context?" requires following values across
+parameters, returns, and package boundaries. The `prog` package provides
+the substrate for those rules.
+
+`prog.Load` type-checks the whole program with `go/packages`, lowers it to
+SSA (`go/ssa`), and builds a CHA call graph. A whole-program cop is a
+`prog.Cop`: like a normal cop it carries `cop.Meta`, but its `Check` takes
+a `*prog.Pass` exposing the entire `*prog.Program` instead of a single
+file.
+
+The core dataflow primitive is `Program.Origins`, an inter-procedural
+backward tracer. Given an SSA value, it walks def-use chains backwards —
+looking through calls (to their callees' returns), parameters (to the
+actual arguments at every call site in the call graph), phi nodes, and the
+copy-like instructions — and returns the set of source values that flow
+into it. Two hooks tune the walk:
+
+- `Stop` halts at a domain boundary and records the value as an origin.
+- `Redirect` looks *through* an otherwise-opaque call to a chosen
+  argument (e.g. `context.WithCancel(parent)` → `parent`).
+
+```go
+var MyProgramCop = prog.New(cop.Meta{
+    Name:        "Lint/MyRule",
+    Description: "...",
+    Severity:    cop.Warning,
+}, func(p *prog.Pass) {
+    for _, fn := range p.Program.AllFunctions() {
+        // inspect fn's SSA, call p.Program.Origins(v, opts),
+        // and p.Reportf(pos, ...) on offenses.
+    }
+})
+```
+
+Run them by registering on the runner with `WithProgramCops`:
+
+```go
+r := runner.New(cops.All(), cfg, os.Stdout).
+    WithProgramCops(cops.AllProgram())
+```
+
+Whole-program analysis is best-effort: if the program cannot be loaded
+(e.g. outside a module) the runner prints a notice and skips the
+program cops rather than failing. Offenses flow through the same
+reporting, severity-override, and `//rubocop:disable` suppression
+machinery as file cops.
+
+`coptest.RunProgram` writes a multi-file program to a temp module, loads
+it, and runs a whole-program cop against it — see
+`cops/lint_context_connectivity_test.go` for cross-package examples.
 
 ## Helper toolbox
 

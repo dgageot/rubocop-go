@@ -5,3 +5,5 @@ cops:
     enabled: true
   Style/EmptyFunc:
     enabled: true
+  Lint/ContextConnectivity:
+    enabled: true
