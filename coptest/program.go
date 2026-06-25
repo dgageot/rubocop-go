@@ -1,7 +1,6 @@
 package coptest
 
 import (
-	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,18 +55,6 @@ func writeFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("coptest: writing %s: %v", path, err)
 	}
-}
-
-// OffenseLines returns the set of source lines an offense slice touches,
-// keyed by filename base. Useful for asserting a whole-program cop fired on
-// the expected lines without hard-coding column positions.
-func OffenseLines(fset *token.FileSet, offenses []cop.Offense) map[string][]int {
-	out := map[string][]int{}
-	for _, o := range offenses {
-		base := filepath.Base(o.Pos.Filename)
-		out[base] = append(out[base], o.Pos.Line)
-	}
-	return out
 }
 
 // HaveGoToolchain reports whether a `go` binary is available on PATH. Tests

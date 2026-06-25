@@ -86,7 +86,7 @@ func (r *Runner) Run(paths []string) (int, error) {
 		return 0, err
 	}
 
-	r.Reporter.Start(len(r.Cops))
+	r.Reporter.Start(len(r.Cops) + len(r.ProgramCops))
 
 	var allOffenses []cop.Offense
 	filesInspected := 0
@@ -263,13 +263,29 @@ func loadPatterns(paths []string) []string {
 	}
 	for _, p := range paths {
 		if info, err := os.Stat(p); err == nil && !info.IsDir() {
-			add("./" + strings.TrimPrefix(filepath.Dir(p), "./"))
+			add(packagePattern(filepath.Dir(p), false))
 			continue
 		}
-		trimmed := strings.TrimSuffix(p, "/")
-		add(trimmed + "/...")
+		add(packagePattern(p, true))
 	}
 	return patterns
+}
+
+func packagePattern(path string, recursive bool) string {
+	clean := filepath.Clean(path)
+	if clean == "." {
+		if recursive {
+			return "./..."
+		}
+		return "."
+	}
+	if !filepath.IsAbs(clean) && !strings.HasPrefix(clean, "./") && !strings.HasPrefix(clean, "../") {
+		clean = "./" + clean
+	}
+	if recursive {
+		return filepath.ToSlash(filepath.Join(clean, "..."))
+	}
+	return filepath.ToSlash(clean)
 }
 
 // typeCheck performs type-checking on a set of parsed files from the same directory.

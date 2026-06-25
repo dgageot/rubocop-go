@@ -87,6 +87,42 @@ func main() {
 
 // Redirect must let the walk see through an otherwise-opaque call to a
 // chosen argument.
+// Origins must preserve the result index of tuple extracts. A value flowing
+// from result #1 must not inherit origins from result #0.
+func TestOrigins_PreservesExtractResultIndex(t *testing.T) {
+	p := loadProgram(t, `package main
+
+func produce() (int, int) { return 1, 2 }
+
+func sink(v int) { _ = v }
+
+func main() {
+	_, second := produce()
+	sink(second)
+}
+`)
+
+	arg := findCallArg(p, "sink", 0)
+	require.NotNil(t, arg)
+
+	origins := p.Origins(arg, prog.TraceOptions{})
+	require.NotEmpty(t, origins)
+
+	var foundOne, foundTwo bool
+	for _, o := range origins {
+		if c, ok := o.(*ssa.Const); ok && c.Value != nil {
+			switch c.Value.String() {
+			case "1":
+				foundOne = true
+			case "2":
+				foundTwo = true
+			}
+		}
+	}
+	require.False(t, foundOne, "origin from result #0 must not flow into result #1")
+	require.True(t, foundTwo, "expected result #1 origin, got %v", origins)
+}
+
 func TestOrigins_Redirect(t *testing.T) {
 	p := loadProgram(t, `package main
 

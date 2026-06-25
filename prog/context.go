@@ -9,7 +9,19 @@ import (
 // false for dynamically dispatched (interface) calls and for callees with
 // no enclosing package (some synthetic wrappers).
 func CalleeID(call *ssa.Call) (pkgPath, name string, ok bool) {
-	fn := call.Common().StaticCallee()
+	if call == nil {
+		return "", "", false
+	}
+	return CalleeCommonID(call.Common())
+}
+
+// CalleeCommonID is like [CalleeID] for any call-like instruction's common
+// call payload (ordinary calls, go calls, and defer calls).
+func CalleeCommonID(common *ssa.CallCommon) (pkgPath, name string, ok bool) {
+	if common == nil {
+		return "", "", false
+	}
+	fn := common.StaticCallee()
 	if fn == nil {
 		return "", "", false
 	}

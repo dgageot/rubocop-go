@@ -52,16 +52,27 @@ type TraceOptions struct {
 // recursion through cycles (loops lowered to phi, mutually recursive
 // functions) terminates.
 func (p *Program) Origins(v ssa.Value, opts TraceOptions) []ssa.Value {
-	t := &tracer{prog: p, opts: opts, seen: map[ssa.Value]bool{}}
+	t := &tracer{
+		prog:      p,
+		opts:      opts,
+		seen:      map[ssa.Value]bool{},
+		seenCalls: map[callResult]bool{},
+	}
 	t.walk(v)
 	return t.origins
 }
 
 type tracer struct {
-	prog    *Program
-	opts    TraceOptions
-	seen    map[ssa.Value]bool
-	origins []ssa.Value
+	prog      *Program
+	opts      TraceOptions
+	seen      map[ssa.Value]bool
+	seenCalls map[callResult]bool
+	origins   []ssa.Value
+}
+
+type callResult struct {
+	call  *ssa.Call
+	index int
 }
 
 func (t *tracer) record(v ssa.Value) {
@@ -85,7 +96,7 @@ func (t *tracer) walk(v ssa.Value) {
 
 	switch val := v.(type) {
 	case *ssa.Call:
-		t.walkCall(val)
+		t.walkCallResult(val, 0)
 	case *ssa.Parameter:
 		t.walkParameter(val)
 	case *ssa.Phi:
@@ -93,9 +104,14 @@ func (t *tracer) walk(v ssa.Value) {
 			t.walk(e)
 		}
 	case *ssa.Extract:
-		// Component of a tuple (typically a multi-value call result). Look
-		// through to the tuple; walkCall handles result routing.
-		t.walk(val.Tuple)
+		// Component of a tuple (typically a multi-value call result).
+		// Preserve the extracted result index so we only look at the
+		// corresponding return values of callees.
+		if call, ok := val.Tuple.(*ssa.Call); ok {
+			t.walkCallResult(call, val.Index)
+		} else {
+			t.walk(val.Tuple)
+		}
 	case *ssa.ChangeType:
 		t.walk(val.X)
 	case *ssa.Convert:
@@ -117,12 +133,18 @@ func (t *tracer) walk(v ssa.Value) {
 	}
 }
 
-// walkCall looks through a call to the origins of the values its callees
-// return. For a statically known callee with a body, that is the set of
-// values appearing in the callee's return statements at the result index
-// this call extracts. Calls with no resolvable body (external/stdlib) are
-// recorded as origins, unless opts.Redirect chooses an argument to follow.
-func (t *tracer) walkCall(call *ssa.Call) {
+// walkCallResult looks through a call to the origins of the values its
+// callees return. resultIndex selects the returned component for multi-result
+// functions; pass -1 to follow every returned value. Calls with no resolvable
+// body (external/stdlib) are recorded as origins, unless opts.Redirect chooses
+// an argument to follow.
+func (t *tracer) walkCallResult(call *ssa.Call, resultIndex int) {
+	key := callResult{call: call, index: resultIndex}
+	if t.seenCalls[key] {
+		return
+	}
+	t.seenCalls[key] = true
+
 	if t.opts.Redirect != nil {
 		if target, ok := t.opts.Redirect(call); ok {
 			t.walk(target)
@@ -141,7 +163,7 @@ func (t *tracer) walkCall(call *ssa.Call) {
 			t.record(call)
 			continue
 		}
-		for _, ret := range returnValues(fn) {
+		for _, ret := range returnValues(fn, resultIndex) {
 			t.walk(ret)
 		}
 	}
@@ -176,7 +198,7 @@ func (t *tracer) walkParameter(param *ssa.Parameter) {
 		if site == nil {
 			continue
 		}
-		args := site.Common().Args
+		args := CallArgs(site)
 		if idx < len(args) {
 			matched = true
 			t.walk(args[idx])
@@ -211,11 +233,9 @@ func (t *tracer) callees(call *ssa.Call) []*ssa.Function {
 	return out
 }
 
-// returnValues collects every value that appears in a return statement of
-// fn. When fn returns multiple values the slice mixes positions; callers
-// that care about a specific result index should filter by type, which is
-// sufficient for the single-context-result functions these cops target.
-func returnValues(fn *ssa.Function) []ssa.Value {
+// returnValues collects the selected values that appear in return statements
+// of fn. resultIndex selects a specific result; -1 collects every result.
+func returnValues(fn *ssa.Function, resultIndex int) []ssa.Value {
 	var out []ssa.Value
 	for _, b := range fn.Blocks {
 		for _, instr := range b.Instrs {
@@ -223,10 +243,31 @@ func returnValues(fn *ssa.Function) []ssa.Value {
 			if !ok {
 				continue
 			}
+			if resultIndex >= 0 {
+				if resultIndex < len(ret.Results) {
+					out = append(out, ret.Results[resultIndex])
+				}
+				continue
+			}
 			out = append(out, ret.Results...)
 		}
 	}
 	return out
+}
+
+// CallArgs returns actual arguments aligned with the callee's Params. For
+// static method calls, ssa.CallCommon.Args already includes the receiver as
+// Args[0]. For interface invokes, CallCommon.Value is the receiver and Args
+// only contains explicit method arguments, so prepend Value.
+func CallArgs(site ssa.CallInstruction) []ssa.Value {
+	common := site.Common()
+	if common.IsInvoke() {
+		args := make([]ssa.Value, 0, 1+len(common.Args))
+		args = append(args, common.Value)
+		args = append(args, common.Args...)
+		return args
+	}
+	return common.Args
 }
 
 // paramIndex returns the position of param in fn.Params, or -1.

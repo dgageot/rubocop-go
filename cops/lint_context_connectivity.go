@@ -121,17 +121,17 @@ func consumedContexts(fn *ssa.Function) []ssa.Value {
 	var out []ssa.Value
 	for _, b := range fn.Blocks {
 		for _, instr := range b.Instrs {
-			call, ok := instr.(*ssa.Call)
+			call, ok := instr.(ssa.CallInstruction)
 			if !ok {
 				continue
 			}
 			// Skip context derivation calls themselves: their context
 			// argument is the parent, not a final consumption, and is
 			// covered by the backward trace.
-			if isDerivationCall(call) {
+			if isDerivation(call) {
 				continue
 			}
-			for _, arg := range call.Common().Args {
+			for _, arg := range prog.CallArgs(call) {
 				if isContextValue(arg) {
 					out = append(out, arg)
 				}
@@ -146,7 +146,7 @@ func consumedContexts(fn *ssa.Function) []ssa.Value {
 // to its parent context argument, so a derived context traces back to the
 // context it was derived from.
 func derivationParent(call *ssa.Call) (ssa.Value, bool) {
-	if !isDerivationCall(call) {
+	if !isDerivation(call) {
 		return nil, false
 	}
 	for _, arg := range call.Common().Args {
@@ -157,10 +157,10 @@ func derivationParent(call *ssa.Call) (ssa.Value, bool) {
 	return nil, false
 }
 
-// isDerivationCall reports whether call is one of the context.With* derivation
+// isDerivation reports whether call is one of the context.With* derivation
 // functions, which take a parent context and return a child.
-func isDerivationCall(call *ssa.Call) bool {
-	pkg, name, ok := prog.CalleeID(call)
+func isDerivation(call ssa.CallInstruction) bool {
+	pkg, name, ok := prog.CalleeCommonID(call.Common())
 	if !ok || pkg != "context" {
 		return false
 	}

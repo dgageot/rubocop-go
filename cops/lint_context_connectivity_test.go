@@ -166,6 +166,35 @@ func main() {
 	assert.Equal(t, 11, offenses[0].Pos.Line) // the context.Background() in helper
 }
 
+// Contexts consumed by go/defer calls still count as consumed contexts. These
+// instructions are not *ssa.Call values, so this protects the CallInstruction
+// path.
+func TestContextConnectivity_DetachedInGoAndDeferCalls(t *testing.T) {
+	requireToolchain(t)
+	files := coptest.ProgramFiles{
+		"main.go": `package main
+
+import "context"
+
+func use(ctx context.Context) { _ = ctx }
+
+func helper() {
+	go use(context.Background())
+	defer use(context.TODO())
+}
+
+func main() {
+	use(context.Background())
+	helper()
+}
+`,
+	}
+	offenses := coptest.RunProgram(t, cops.NewLintContextConnectivity(), files)
+	require.Len(t, offenses, 2)
+	assert.Equal(t, 8, offenses[0].Pos.Line)
+	assert.Equal(t, 9, offenses[1].Pos.Line)
+}
+
 // A deliberate detached root annotated with a suppression comment is not
 // reported. (Suppression is applied by the runner, so here we assert the
 // raw cop still fires; the runner-level test covers suppression.)
