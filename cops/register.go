@@ -5,7 +5,10 @@
 // constructors directly (see examples/embed) or filter the slice.
 package cops
 
-import "github.com/dgageot/rubocop-go/cop"
+import (
+	"github.com/dgageot/rubocop-go/cop"
+	"github.com/dgageot/rubocop-go/prog"
+)
 
 // All returns a fresh slice containing every built-in cop. The returned
 // slice is independent of the package state, so callers may freely append
@@ -17,5 +20,16 @@ func All() []cop.Cop {
 		NewLintOsExit(),
 		NewStyleEmptyFunc(),
 		NewStyleErrorNaming(),
+	}
+}
+
+// AllProgram returns a fresh slice containing every built-in whole-program
+// cop. These run once over the entire loaded program (via go/packages +
+// go/ssa) rather than once per file, so they can answer inter-procedural,
+// cross-package questions. Pass them to the runner with
+// runner.Runner.WithProgramCops.
+func AllProgram() []prog.Cop {
+	return []prog.Cop{
+		NewLintContextConnectivity(),
 	}
 }

@@ -21,7 +21,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	r := runner.New(cops.All(), cfg, os.Stdout)
+	r := runner.New(cops.All(), cfg, os.Stdout).
+		WithProgramCops(cops.AllProgram())
 
 	offenseCount, err := r.Run(paths)
 	if err != nil {
