@@ -134,6 +134,56 @@ func main() {
 	assert.Empty(t, offenses)
 }
 
+// context.WithoutCancel is a derivation: a context wrapped to outlive its
+// parent's cancellation still traces back to the root, so it is connected.
+func TestContextConnectivity_WithoutCancelFromRootIsConnected(t *testing.T) {
+	requireToolchain(t)
+	files := coptest.ProgramFiles{
+		"main.go": `package main
+
+import "context"
+
+func use(ctx context.Context) { _ = ctx }
+
+func main() {
+	ctx := context.Background()
+	detached := context.WithoutCancel(ctx)
+	use(detached)
+}
+`,
+	}
+	offenses := coptest.RunProgram(t, cops.NewLintContextConnectivity(), files)
+	assert.Empty(t, offenses)
+}
+
+// context.WithoutCancel applied to a fresh root outside main is still
+// reported: the detach helps the lifetime, but the parent is not connected.
+func TestContextConnectivity_WithoutCancelFromDetachedRoot(t *testing.T) {
+	requireToolchain(t)
+	files := coptest.ProgramFiles{
+		"main.go": `package main
+
+import "context"
+
+func use(ctx context.Context) { _ = ctx }
+
+func helper() {
+	base := context.Background()
+	use(context.WithoutCancel(base))
+}
+
+func main() {
+	use(context.Background())
+	helper()
+}
+`,
+	}
+	offenses := coptest.RunProgram(t, cops.NewLintContextConnectivity(), files)
+	require.Len(t, offenses, 1)
+	assert.Equal(t, 8, offenses[0].Pos.Line) // the context.Background() in helper
+	assert.Contains(t, offenses[0].Message, "detached context")
+}
+
 // A context derived from a detached root is still reported, anchored on the
 // detached root rather than the derivation.
 func TestContextConnectivity_DerivedFromDetachedRoot(t *testing.T) {

@@ -166,7 +166,8 @@ func isDerivation(call ssa.CallInstruction) bool {
 	}
 	switch name {
 	case "WithCancel", "WithCancelCause", "WithValue",
-		"WithTimeout", "WithTimeoutCause", "WithDeadline", "WithDeadlineCause":
+		"WithTimeout", "WithTimeoutCause", "WithDeadline", "WithDeadlineCause",
+		"WithoutCancel":
 		return true
 	}
 	return false
