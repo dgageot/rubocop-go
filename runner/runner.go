@@ -114,7 +114,7 @@ func (r *Runner) Run(paths []string) (int, error) {
 		}
 	} else {
 		for _, path := range files {
-			f, parseErr := parser.ParseFile(fset, path, nil, parser.ParseComments)
+			f, parseErr := parser.ParseFile(fset, path, nil, parser.ParseComments|parser.SkipObjectResolution)
 			if parseErr != nil {
 				// Surface the parse failure as a reporter event with no offenses.
 				r.Reporter.FileFinished(path, nil)
@@ -181,7 +181,7 @@ func (r *Runner) parseFiles(fset *token.FileSet, paths []string) ([]*ast.File, [
 		parsedPath []string
 	)
 	for _, p := range paths {
-		f, err := parser.ParseFile(fset, p, nil, parser.ParseComments)
+		f, err := parser.ParseFile(fset, p, nil, parser.ParseComments|parser.SkipObjectResolution)
 		if err != nil {
 			r.Reporter.FileFinished(p, nil)
 			continue
@@ -228,7 +228,7 @@ func (r *Runner) filterSuppressed(fset *token.FileSet, offenses []cop.Offense) [
 			return s
 		}
 		var s *cop.Suppressions
-		if f, err := parser.ParseFile(fset, filename, nil, parser.ParseComments); err == nil {
+		if f, err := parser.ParseFile(fset, filename, nil, parser.ParseComments|parser.SkipObjectResolution); err == nil {
 			s = cop.ScanSuppressions(fset, f)
 		}
 		cache[filename] = s

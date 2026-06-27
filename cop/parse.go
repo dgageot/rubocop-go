@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,14 +24,50 @@ import (
 //	hooksTypes, err := p.ParseSibling(\"../../hooks/types.go\")
 func (p *Pass) ParseSibling(relPath string) (*ast.File, error) {
 	dir := filepath.Dir(p.Filename())
-	target := filepath.Clean(filepath.Join(dir, relPath))
+	return p.ParseFile(filepath.Join(dir, relPath))
+}
+
+// ParseFile parses a Go file at path using rubocop-go's fast syntactic
+// parse mode. Relative paths are resolved from the process working
+// directory, matching the runner's path handling.
+func (p *Pass) ParseFile(path string) (*ast.File, error) {
+	target := filepath.Clean(path)
 
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, target, nil, parser.ParseComments)
+	f, err := parser.ParseFile(fset, target, nil, parseMode)
 	if err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", target, err)
 	}
 	return f, nil
+}
+
+var parseMode = parser.ParseComments | parser.SkipObjectResolution
+
+// SiblingStringConsts parses a sibling file and returns its top-level string
+// constants. It combines [Pass.ParseSibling] and [StringConstsIn] for the
+// common cross-file registry-sync pattern.
+func (p *Pass) SiblingStringConsts(relPath string, pred func(name string) bool) (map[string]string, error) {
+	file, err := p.ParseSibling(relPath)
+	if err != nil {
+		return nil, err
+	}
+	return StringConstsIn(file, pred), nil
+}
+
+// DirStringConsts parses every matching Go file in dirRelPath and returns the
+// union of their top-level string constants. Later files with the same
+// constant name overwrite earlier values; callers that need duplicate
+// detection should use ParseDir directly.
+func (p *Pass) DirStringConsts(dirRelPath string, opts ParseDirOptions, pred func(name string) bool) (map[string]string, error) {
+	files, err := p.ParseDir(dirRelPath, opts)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, file := range files {
+		maps.Copy(out, StringConstsIn(file, pred))
+	}
+	return out, nil
 }
 
 // ParseDirOptions controls Pass.ParseDir.
@@ -81,7 +118,7 @@ func (p *Pass) ParseDir(dirRelPath string, opts ParseDirOptions) ([]*ast.File, e
 		if _, drop := skip[name]; drop {
 			continue
 		}
-		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.ParseComments)
+		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parseMode)
 		if err != nil {
 			continue
 		}

@@ -89,6 +89,26 @@ func (p *Pass) StructType(name string) (*ast.TypeSpec, *ast.StructType) {
 	return ts, st
 }
 
+// StructStringFields returns a map from Go field name to the named struct tag
+// value for the top-level struct type. Missing structs return nil.
+func (p *Pass) StructStringFields(typeName, tagName string) map[string]string {
+	_, st := p.StructType(typeName)
+	if st == nil || st.Fields == nil {
+		return nil
+	}
+	out := map[string]string{}
+	for _, fld := range st.Fields.List {
+		opts, ok := ParseTagOptions(FieldTag(fld), tagName)
+		if !ok || !opts.HasName() {
+			continue
+		}
+		for _, name := range fld.Names {
+			out[name.Name] = opts.Name
+		}
+	}
+	return out
+}
+
 // PointerReceiverMethods returns the set of type names T for which the
 // file declares `func (*T) name(...)`. Use it for syntactic
 // interface-satisfaction checks ("does X implement SessionScoped?")
