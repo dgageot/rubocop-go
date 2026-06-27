@@ -140,13 +140,21 @@ The bundled scope helpers are:
 ### Plugged into the bundled CLI
 
 If you want your cop to ship inside the bundled `rubocop-go` CLI, add it to
-the `cops/` package and register it from an `init()`:
+the `cops/` package as a `NewMyCop()` constructor and append it to the
+slice returned by `cops.All()` in `cops/register.go` (or `cops.AllProgram()`
+for whole-program cops):
 
 ```go
-func init() { cop.Register(NewMyCop()) }
+func All() []cop.Cop {
+    return []cop.Cop{
+        // ... existing cops ...
+        NewMyCop(),
+    }
+}
 ```
 
-Then `main.go` picks it up automatically via `cop.All()`.
+`main.go` runs `cops.All()` (and `cops.AllProgram()`), so it picks the cop
+up automatically.
 
 ### Type-aware cops
 
