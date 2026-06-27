@@ -1,54 +1,33 @@
 version: "1"
 
-tasks:
-  # Build, lint, and test
-  default:
-    deps: [build, lint, test]
+default: dev
 
+tasks:
   # Build, lint, and test on source changes
   dev:
     deps: [build, lint, test]
-    sources:
-      - "**/*.go"
-      - go.mod
-      - go.sum
+    sources: go
 
   # Build the binary
   build:
-    cmds:
-      - go build -trimpath -ldflags "-s -w" -o bin/rubocop-go .
-    sources:
-      - "**/*.go"
-      - go.mod
-      - go.sum
-
-  # Remove build artifacts
-  clean:
-    cmds:
-      - rm -rf bin
+    cmd: go build -trimpath -ldflags "-s -w" -o bin/rubocop-go .
+    sources: go
 
   # Run linters
   lint:
-    cmds:
-      - golangci-lint run
-    sources:
-      - "**/*.go"
-      - go.mod
-      - go.sum
-      - .golangci.yml
+    cmd: golangci-lint run
+    sources: [go, .golangci.yml]
 
   # Run tests
   test:
-    cmds:
-      - go test ./...
-    sources:
-      - "**/*.go"
-      - go.mod
-      - go.sum
+    cmd: go test ./...
+    sources: go
 
   # Format Go source files
   format:
-    cmds:
-      - goimports -w .
-    sources:
-      - "**/*.go"
+    cmd: goimports -w .
+    sources: "**/*.go"
+
+  # Remove build artifacts
+  clean:
+    cmd: rm -rf bin
