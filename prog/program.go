@@ -26,20 +26,21 @@ package prog
 import (
 	"fmt"
 	"go/token"
+	"go/types"
+	"slices"
 
 	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/callgraph/cha"
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa"
-	"golang.org/x/tools/go/ssa/ssautil"
 )
 
 // Program is a whole-program view of the code under analysis: the loaded
 // packages with full type information, their SSA form, and a call graph.
 //
-// A Program is expensive to build (it type-checks every dependency and
-// lowers the initial packages to SSA), so the runner builds it once and
-// shares it across every whole-program cop.
+// A Program is expensive to build (it type-checks the initial packages and
+// lowers them to SSA), so the runner builds it once and shares it across
+// every whole-program cop.
 type Program struct {
 	// Fset is the shared position table for every loaded file.
 	Fset *token.FileSet
@@ -57,14 +58,13 @@ type Program struct {
 	CallGraph *callgraph.Graph
 }
 
-// loadMode requests everything a whole-program analysis needs: names,
-// files, imports of every dependency, full type information, and
+// loadMode requests everything a whole-program analysis needs for the
+// initial packages: names, files, imports, full type information, and
 // type-annotated syntax.
 const loadMode = packages.NeedName |
 	packages.NeedFiles |
 	packages.NeedCompiledGoFiles |
 	packages.NeedImports |
-	packages.NeedDeps |
 	packages.NeedTypes |
 	packages.NeedSyntax |
 	packages.NeedTypesInfo |
@@ -72,7 +72,6 @@ const loadMode = packages.NeedName |
 
 // Load type-checks the packages named by patterns (the same patterns the
 // go tool accepts, e.g. "./...") and lowers them to SSA with a call graph.
-//
 // Load tolerates partial failures the way the rest of rubocop-go does: a
 // package that does not type-check contributes whatever information was
 // recovered. Load only returns an error when nothing at all could be
@@ -99,13 +98,36 @@ func LoadDir(dir string, patterns ...string) (*Program, error) {
 		return nil, fmt.Errorf("no packages matched %v", patterns)
 	}
 
-	// Lower every initial package and its dependencies to SSA. SanityCheck
-	// is off for speed; we trust go/ssa's output.
-	ssaProg, ssaPkgs := ssautil.Packages(pkgs, ssa.InstantiateGenerics)
-	if ssaProg == nil {
+	// Lower only the initial packages to SSA. Whole-program cops operate on
+	// project code; dependencies remain available for type information but
+	// don't need SSA bodies or call-graph nodes.
+	ssaProg := ssa.NewProgram(cfg.Fset, ssa.InstantiateGenerics)
+	created := map[*types.Package]bool{}
+	packages.Visit(pkgs, func(pkg *packages.Package) bool {
+		if pkg.Types == nil || created[pkg.Types] {
+			return false
+		}
+		created[pkg.Types] = true
+		if isInitialPackage(pkgs, pkg) {
+			ssaProg.CreatePackage(pkg.Types, pkg.Syntax, pkg.TypesInfo, true)
+		} else {
+			ssaProg.CreatePackage(pkg.Types, nil, nil, true)
+		}
+		return true
+	}, nil)
+
+	ssaPkgs := make([]*ssa.Package, len(pkgs))
+	for i, pkg := range pkgs {
+		ssaPkgs[i] = ssaProg.Package(pkg.Types)
+	}
+	if len(ssaPkgs) == 0 {
 		return nil, fmt.Errorf("building SSA: no buildable packages in %v", patterns)
 	}
-	ssaProg.Build()
+	for _, ssaPkg := range ssaPkgs {
+		if ssaPkg != nil {
+			ssaPkg.Build()
+		}
+	}
 
 	return &Program{
 		Fset:        cfg.Fset,
@@ -114,6 +136,10 @@ func LoadDir(dir string, patterns ...string) (*Program, error) {
 		SSAPackages: ssaPkgs,
 		CallGraph:   cha.CallGraph(ssaProg),
 	}, nil
+}
+
+func isInitialPackage(initial []*packages.Package, pkg *packages.Package) bool {
+	return slices.Contains(initial, pkg)
 }
 
 // HasErrors reports whether any loaded package had load or type errors.
