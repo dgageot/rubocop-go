@@ -5,7 +5,6 @@ import (
 	"sort"
 
 	"golang.org/x/tools/go/ssa"
-	"golang.org/x/tools/go/ssa/ssautil"
 )
 
 // sprintf applies fmt.Sprintf only when args are present, so a literal
@@ -15,12 +14,6 @@ func sprintf(format string, args ...any) string {
 		return format
 	}
 	return fmt.Sprintf(format, args...)
-}
-
-// allFunctions is a thin wrapper over ssautil.AllFunctions so callers do
-// not import ssautil directly.
-func allFunctions(prog *ssa.Program) map[*ssa.Function]bool {
-	return ssautil.AllFunctions(prog)
 }
 
 // sortFunctions orders functions by position then name for deterministic

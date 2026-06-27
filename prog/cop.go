@@ -91,14 +91,30 @@ func (f *Func) Check(p *Pass) {
 }
 
 // AllFunctions returns every SSA function with a body in the loaded
-// program, in a deterministic order, so cops iterate reproducibly.
+// initial packages, in a deterministic order, so cops iterate reproducibly.
 func (p *Program) AllFunctions() []*ssa.Function {
-	var fns []*ssa.Function
-	for fn := range allFunctions(p.SSA) {
-		if fn.Blocks != nil {
-			fns = append(fns, fn)
+	return p.allFunctions
+}
+
+func collectFunctions(fn *ssa.Function, seen map[*ssa.Function]bool) {
+	if fn == nil || seen[fn] {
+		return
+	}
+	seen[fn] = true
+	var buf [10]*ssa.Value
+	for _, b := range fn.Blocks {
+		for _, instr := range b.Instrs {
+			for _, op := range instr.Operands(buf[:0]) {
+				if op == nil {
+					continue
+				}
+				if fn, ok := (*op).(*ssa.Function); ok {
+					collectFunctions(fn, seen)
+				}
+			}
 		}
 	}
-	sortFunctions(fns)
-	return fns
+	for _, anon := range fn.AnonFuncs {
+		collectFunctions(anon, seen)
+	}
 }

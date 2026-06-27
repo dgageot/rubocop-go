@@ -11,7 +11,7 @@
 // prog provides the substrate for those rules:
 //
 //   - [Load] type-checks the whole program with go/packages and lowers it
-//     to SSA (go/ssa), then builds a call graph (CHA).
+//     to SSA (go/ssa), then builds a call graph.
 //   - [Program.Origins] walks SSA def-use chains backwards, crossing
 //     function boundaries via the call graph, to compute the set of
 //     "source" values that flow into a given value.
@@ -28,9 +28,9 @@ import (
 	"go/token"
 	"go/types"
 	"slices"
+	"strings"
 
 	"golang.org/x/tools/go/callgraph"
-	"golang.org/x/tools/go/callgraph/cha"
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa"
 )
@@ -52,10 +52,12 @@ type Program struct {
 	// SSAPackages are the SSA packages corresponding 1:1 with Packages
 	// (nil entries for packages that failed to lower).
 	SSAPackages []*ssa.Package
-	// CallGraph is the Class Hierarchy Analysis call graph over SSA. It is
-	// sound (no real edge is missing) but may contain spurious edges for
-	// interface calls; inter-procedural tracers must tolerate that.
+	// CallGraph is the static call graph over SSA. It includes interface
+	// method calls when their concrete targets are present in the loaded
+	// initial packages.
 	CallGraph *callgraph.Graph
+	// allFunctions caches [AllFunctions].
+	allFunctions []*ssa.Function
 }
 
 // loadMode requests everything a whole-program analysis needs for the
@@ -72,6 +74,7 @@ const loadMode = packages.NeedName |
 
 // Load type-checks the packages named by patterns (the same patterns the
 // go tool accepts, e.g. "./...") and lowers them to SSA with a call graph.
+//
 // Load tolerates partial failures the way the rest of rubocop-go does: a
 // package that does not type-check contributes whatever information was
 // recovered. Load only returns an error when nothing at all could be
@@ -129,13 +132,123 @@ func LoadDir(dir string, patterns ...string) (*Program, error) {
 		}
 	}
 
+	ssaFns := sourceFunctions(ssaPkgs)
 	return &Program{
-		Fset:        cfg.Fset,
-		Packages:    pkgs,
-		SSA:         ssaProg,
-		SSAPackages: ssaPkgs,
-		CallGraph:   cha.CallGraph(ssaProg),
+		Fset:         cfg.Fset,
+		Packages:     pkgs,
+		SSA:          ssaProg,
+		SSAPackages:  ssaPkgs,
+		CallGraph:    buildCallGraph(ssaFns),
+		allFunctions: ssaFns,
 	}, nil
+}
+
+func buildCallGraph(fns []*ssa.Function) *callgraph.Graph {
+	graph := callgraph.New(nil)
+	nodes := make(map[*ssa.Function]*callgraph.Node, len(fns))
+	nodeFor := func(fn *ssa.Function) *callgraph.Node {
+		if node := nodes[fn]; node != nil {
+			return node
+		}
+		node := graph.CreateNode(fn)
+		nodes[fn] = node
+		return node
+	}
+	methodIndex := indexMethods(fns)
+	for _, fn := range fns {
+		caller := nodeFor(fn)
+		for _, b := range fn.Blocks {
+			for _, instr := range b.Instrs {
+				site, ok := instr.(ssa.CallInstruction)
+				if !ok {
+					continue
+				}
+				common := site.Common()
+				if callee := common.StaticCallee(); callee != nil {
+					callgraph.AddEdge(caller, site, nodeFor(callee))
+					continue
+				}
+				if !common.IsInvoke() || common.Method == nil {
+					continue
+				}
+				for _, callee := range methodIndex[methodKey(common.Method.Name(), common.Signature())] {
+					if implementsInvokeReceiver(callee, common) {
+						callgraph.AddEdge(caller, site, nodeFor(callee))
+					}
+				}
+			}
+		}
+	}
+	return graph
+}
+
+func indexMethods(fns []*ssa.Function) map[string][]*ssa.Function {
+	index := map[string][]*ssa.Function{}
+	for _, fn := range fns {
+		if fn.Signature != nil && fn.Signature.Recv() != nil {
+			index[methodKey(fn.Name(), fn.Signature)] = append(index[methodKey(fn.Name(), fn.Signature)], fn)
+		}
+	}
+	return index
+}
+
+func implementsInvokeReceiver(callee *ssa.Function, common *ssa.CallCommon) bool {
+	if callee.Signature == nil || callee.Signature.Recv() == nil || common.Value == nil {
+		return false
+	}
+	iface, ok := common.Value.Type().Underlying().(*types.Interface)
+	if !ok {
+		return false
+	}
+	return types.Implements(callee.Signature.Recv().Type(), iface)
+}
+
+func methodKey(name string, sig *types.Signature) string {
+	if sig == nil {
+		return name
+	}
+	var b strings.Builder
+	b.WriteString(name)
+	b.WriteByte('(')
+	writeTuple(&b, sig.Params())
+	if sig.Variadic() {
+		b.WriteString("...")
+	}
+	b.WriteString(")(")
+	writeTuple(&b, sig.Results())
+	b.WriteByte(')')
+	return b.String()
+}
+
+func writeTuple(b *strings.Builder, tuple *types.Tuple) {
+	for i := range tuple.Len() {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(types.TypeString(tuple.At(i).Type(), nil))
+	}
+}
+
+func sourceFunctions(pkgs []*ssa.Package) []*ssa.Function {
+	seen := map[*ssa.Function]bool{}
+	for _, pkg := range pkgs {
+		if pkg == nil {
+			continue
+		}
+		for _, member := range pkg.Members {
+			if fn, ok := member.(*ssa.Function); ok {
+				collectFunctions(fn, seen)
+			}
+		}
+	}
+	fns := make([]*ssa.Function, 0, len(seen))
+	for fn := range seen {
+		if fn.Blocks != nil {
+			fns = append(fns, fn)
+		}
+	}
+	sortFunctions(fns)
+	return fns
 }
 
 func isInitialPackage(initial []*packages.Package, pkg *packages.Package) bool {

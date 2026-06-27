@@ -266,6 +266,60 @@ func main() {
 	assert.Empty(t, offenses)
 }
 
+// A detached root consumed through an interface method call is still traced
+// through the dynamic dispatch edge.
+func TestContextConnectivity_DetachedThroughInterface(t *testing.T) {
+	requireToolchain(t)
+	files := coptest.ProgramFiles{
+		"main.go": `package main
+
+import "context"
+
+type worker interface { Run(context.Context) }
+type impl struct{}
+
+func (impl) Run(ctx context.Context) { use(ctx) }
+func use(ctx context.Context) { _ = ctx }
+
+func helper(w worker) {
+	w.Run(context.Background())
+}
+
+func main() {
+	use(context.Background())
+	helper(impl{})
+}
+`,
+	}
+	offenses := coptest.RunProgram(t, cops.NewLintContextConnectivity(), files)
+	require.Len(t, offenses, 1)
+	assert.Equal(t, 12, offenses[0].Pos.Line)
+}
+
+// A detached root consumed from package initialization is still inspected.
+func TestContextConnectivity_DetachedInInit(t *testing.T) {
+	requireToolchain(t)
+	files := coptest.ProgramFiles{
+		"main.go": `package main
+
+import "context"
+
+func use(ctx context.Context) { _ = ctx }
+
+func init() {
+	use(context.Background())
+}
+
+func main() {
+	use(context.Background())
+}
+`,
+	}
+	offenses := coptest.RunProgram(t, cops.NewLintContextConnectivity(), files)
+	require.Len(t, offenses, 1)
+	assert.Equal(t, 8, offenses[0].Pos.Line)
+}
+
 func requireToolchain(t *testing.T) {
 	t.Helper()
 	if !coptest.HaveGoToolchain() {
