@@ -126,11 +126,7 @@ func LoadDir(dir string, patterns ...string) (*Program, error) {
 	if len(ssaPkgs) == 0 {
 		return nil, fmt.Errorf("building SSA: no buildable packages in %v", patterns)
 	}
-	for _, ssaPkg := range ssaPkgs {
-		if ssaPkg != nil {
-			ssaPkg.Build()
-		}
-	}
+	ssaProg.Build()
 
 	ssaFns := sourceFunctions(ssaPkgs)
 	return &Program{
