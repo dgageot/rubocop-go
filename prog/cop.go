@@ -36,7 +36,19 @@ func (p *Pass) Reportf(pos token.Pos, format string, args ...any) {
 
 // ReportAtf records an offense covering [pos, end).
 func (p *Pass) ReportAtf(pos, end token.Pos, format string, args ...any) {
-	o := cop.NewOffenseFor(p.Cop.Name(), p.Cop.Severity(), p.Program.Fset, pos, end, sprintf(format, args...))
+	p.ReportOffense(cop.Offense{
+		Pos:     p.Program.Fset.Position(pos),
+		End:     p.Program.Fset.Position(end),
+		Message: sprintf(format, args...),
+	})
+}
+
+// ReportOffense records an existing offense without changing its positions or
+// message. The cop name and default severity come from this pass's cop, with
+// SeverityOverride applied when set.
+func (p *Pass) ReportOffense(o cop.Offense) {
+	o.CopName = p.Cop.Name()
+	o.Severity = p.Cop.Severity()
 	if p.SeverityOverride != nil {
 		o.Severity = *p.SeverityOverride
 	}

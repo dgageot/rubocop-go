@@ -293,12 +293,14 @@ func packagePattern(path string, recursive bool) string {
 // run on code with unresolved imports.
 func typeCheck(fset *token.FileSet, dir string, files []*ast.File) (*types.Info, *types.Package) {
 	info := &types.Info{
-		Types: make(map[ast.Expr]types.TypeAndValue),
-		Defs:  make(map[*ast.Ident]types.Object),
-		Uses:  make(map[*ast.Ident]types.Object),
+		Types:        make(map[ast.Expr]types.TypeAndValue),
+		Defs:         make(map[*ast.Ident]types.Object),
+		Uses:         make(map[*ast.Ident]types.Object),
+		FileVersions: make(map[*ast.File]string),
 	}
 
 	cfg := &types.Config{
+		GoVersion: moduleGoVersion(dir),
 		// Ignore import errors — we just want the type info we can get.
 		Error: func(error) {},
 	}
