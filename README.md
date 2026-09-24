@@ -30,6 +30,14 @@ var LintOsExit = cop.New(cop.Meta{
 | `Style/ErrorNaming` | Enforces error variable naming conventions |
 | `Style/EmptyFunc` | Detects empty function bodies |
 
+### Shared opt-in cops
+
+Sixteen additional cops are available through named constructors for logging,
+errors, constructor lifecycles, stream synchronization, and Go modernization.
+They are deliberately **not** included in `All()` or `AllProgram()`.
+See the [shared cop catalog](docs/shared-cops.md) for brief descriptions,
+examples, minimum Go versions, and limitations.
+
 ### Whole-program cops
 
 These run once over the entire loaded program rather than once per file,
@@ -169,6 +177,15 @@ var LintCloneCompleteness = cop.New(cop.Meta{Name: "Lint/CloneCompleteness", ...
 
 (Or, for a hand-rolled struct, implement the `cop.TypeAware` interface
 with a `NeedsTypes() bool` method.)
+
+Use `prog.FromFile(c)` when a file-shaped cop needs the program's fully resolved
+imports and types. The adapter honors file scope without removing analysis
+inputs and preserves diagnostic spans and runner severity overrides.
+
+For language-dependent recommendations, use `cop.WithMinGoVersion("go1.26")`;
+for standard-library APIs, use `cop.WithMinStdlibVersion("go1.27")`. The checks
+use target module/file requirements, not the linter toolchain; older or unknown
+targets are skipped. Both guards are independent of `cop.WithScope`.
 
 ### Whole-program, inter-procedural cops
 

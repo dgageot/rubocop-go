@@ -18,6 +18,12 @@
 //	    cop.WithScope(cop.UnderDir("pkg/tui")),
 //	)
 //
+// Use [WithMinGoVersion] to require a file language version for newer syntax,
+// and [WithMinStdlibVersion] to require newer standard-library APIs. Both accept
+// versions such as "go1.26" and skip older or unknown targets. File build
+// constraints determine the language version; standard-library availability
+// uses the higher of the file and package versions, never the running toolchain.
+//
 // You can also implement [Cop] yourself if your cop needs to keep state
 // across calls; in that case, embed [Meta] for the field-style metadata
 // and provide your own Name/Description/Severity/Check methods.
@@ -28,6 +34,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"go/version"
 	"slices"
 	"strings"
 	"sync"
@@ -162,6 +169,37 @@ func (p *Pass) PackageName() string {
 	return p.File.Name.Name
 }
 
+// GoVersion returns the file's effective Go language version, or "" if unknown.
+// File versions from build constraints take precedence over the package version.
+// Use [Pass.StdlibVersion] instead to check standard-library API availability.
+func (p *Pass) GoVersion() string {
+	if p.Info != nil {
+		if v := p.Info.FileVersions[p.File]; v != "" {
+			return v
+		}
+	}
+	if p.Package != nil {
+		return p.Package.GoVersion()
+	}
+	return ""
+}
+
+// StdlibVersion returns the target Go version for standard-library APIs, or ""
+// if unknown. It is the higher valid version of [Pass.GoVersion] and the package's
+// Go version, never the running toolchain's version.
+func (p *Pass) StdlibVersion() string {
+	v := p.GoVersion()
+	if !version.IsValid(v) {
+		v = ""
+	}
+	if p.Package != nil {
+		if pkgVersion := p.Package.GoVersion(); version.IsValid(pkgVersion) && version.Compare(pkgVersion, v) > 0 {
+			v = pkgVersion
+		}
+	}
+	return v
+}
+
 // IsMain reports whether the file declares package main.
 func (p *Pass) IsMain() bool {
 	return p.PackageName() == "main"
@@ -220,6 +258,13 @@ type Func struct {
 	// Returning false from Scope short-circuits the cop entirely; Run
 	// is not called and no offense can be produced.
 	Scope CheckScope
+	// MinGoVersion is the minimum file language version for syntax, such as
+	// "go1.26". Check skips files with older or unknown [Pass.GoVersion] values.
+	MinGoVersion string
+	// MinStdlibVersion is the minimum version for standard-library APIs.
+	// Check skips files with older or unknown [Pass.StdlibVersion] values.
+	// When both minimums are set, both requirements must be satisfied.
+	MinStdlibVersion string
 	// Types, when true, opts the cop into type information. The runner
 	// type-checks the package and populates p.Info / p.Package on the
 	// Pass passed to Run. This is the [Func]-based equivalent of
@@ -236,6 +281,20 @@ type FuncOption func(*Func)
 // WithScope restricts a Func to files matching scope.
 func WithScope(scope CheckScope) FuncOption {
 	return func(f *Func) { f.Scope = scope }
+}
+
+// WithMinGoVersion requires a file language version of at least minimum
+// (e.g. "go1.26") for newer syntax. Use [WithMinStdlibVersion] for library APIs.
+// It requests type information and skips unknown targets, independently of Scope.
+func WithMinGoVersion(minimum string) FuncOption {
+	return func(f *Func) { f.MinGoVersion = minimum }
+}
+
+// WithMinStdlibVersion requires standard-library APIs from at least minimum
+// (e.g. "go1.26"). It requests type information and skips unknown targets,
+// independently of Scope and any [WithMinGoVersion] language requirement.
+func WithMinStdlibVersion(minimum string) FuncOption {
+	return func(f *Func) { f.MinStdlibVersion = minimum }
 }
 
 // WithTypes opts a Func into type information.
@@ -263,6 +322,12 @@ func (f *Func) Severity() Severity { return f.Meta.Severity }
 
 // Check implements [Cop].
 func (f *Func) Check(p *Pass) {
+	if f.MinGoVersion != "" && (!version.IsValid(f.MinGoVersion) || version.Compare(p.GoVersion(), f.MinGoVersion) < 0) {
+		return
+	}
+	if f.MinStdlibVersion != "" && (!version.IsValid(f.MinStdlibVersion) || version.Compare(p.StdlibVersion(), f.MinStdlibVersion) < 0) {
+		return
+	}
 	if f.Run != nil {
 		f.Run(p)
 	}
@@ -274,7 +339,9 @@ func (f *Func) InScope(p *Pass) bool {
 }
 
 // NeedsTypes implements [TypeAware].
-func (f *Func) NeedsTypes() bool { return f.Types }
+func (f *Func) NeedsTypes() bool {
+	return f.Types || f.MinGoVersion != "" || f.MinStdlibVersion != ""
+}
 
 // Scoped is an optional interface a Cop can implement to skip the entire
 // file before Check is called. The runner consults InScope first; if it
