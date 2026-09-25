@@ -78,6 +78,63 @@ func suppressed() *int {
 	}
 }
 
+func TestSharedContextAndFatalRunnerPolicy(t *testing.T) {
+	t.Parallel()
+	const src = `package p
+import ("context"; "log"; "net/http")
+func run(id string, ctx context.Context) {}
+type Service struct { ctx context.Context }
+var req, err = http.NewRequest("GET", "/", nil)
+func stop() { log.Fatal("boom") }
+func suppressed(id string, ctx context.Context) {} //rubocop:disable Lint/ContextFirstParameter
+type Suppressed struct { ctx context.Context } //rubocop:disable Lint/NoContextField
+var ignored, ignoredErr = http.NewRequest("GET", "/", nil) //rubocop:disable Lint/HTTPRequestWithContext
+func suppressedStop() { log.Fatal("boom") } //rubocop:disable Lint/NoFatalOutsideMain
+`
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"p.go":          src,
+		"p_test.go":     src,
+		"legacy/p.go":   src,
+		"disabled/p.go": "//rubocop:disable-file Lint/ContextFirstParameter,Lint/NoContextField,Lint/HTTPRequestWithContext,Lint/NoFatalOutsideMain\n" + src,
+	} {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	}
+	scope := cop.WithScope(cop.Not(cop.UnderDir("legacy")))
+	checks := []cop.Cop{
+		NewLintContextFirstParameter(scope), NewLintNoContextField(scope),
+		NewLintHTTPRequestWithContext(scope), NewLintNoFatalOutsideMain(scope),
+	}
+	cfg := config.DefaultConfig()
+	for _, c := range checks {
+		cfg.Cops[c.Name()] = config.CopConfig{Severity: "warning"}
+	}
+	var output bytes.Buffer
+	r := runner.New(checks, cfg, &output)
+	r.Reporter = runner.NewJSONReporter(&output)
+	count, err := r.Run([]string{dir})
+	require.NoError(t, err)
+	require.Equal(t, 4, count, output.String())
+	var result struct {
+		Offenses []struct {
+			Cop, Severity, File string
+			Line                int
+			EndColumn           int `json:"end_column"`
+		}
+	}
+	require.NoError(t, json.Unmarshal(output.Bytes(), &result))
+	require.Len(t, result.Offenses, len(checks))
+	for i, offense := range result.Offenses {
+		assert.Equal(t, checks[i].Name(), offense.Cop)
+		assert.Equal(t, i+3, offense.Line)
+		assert.Equal(t, "warning", offense.Severity)
+		assert.Equal(t, filepath.Join(dir, "p.go"), offense.File)
+		assert.Positive(t, offense.EndColumn)
+	}
+}
+
 func TestStdlibUUIDScopeRetainsRandomnessEvidence(t *testing.T) {
 	requireGo127(t)
 	t.Parallel()

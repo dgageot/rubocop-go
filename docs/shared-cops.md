@@ -6,6 +6,10 @@ The catalog descriptions match each cop's `Meta.Description`.
 
 | Cop | Description | Target Go |
 | --- | --- | --- |
+| `Lint/ContextFirstParameter` | Put context.Context first in function parameter lists. | — |
+| `Lint/NoContextField` | Pass contexts to operations instead of storing them in structs. | — |
+| `Lint/HTTPRequestWithContext` | Use http.NewRequestWithContext to construct HTTP requests. | — |
+| `Lint/NoFatalOutsideMain` | Reserve log.Fatal calls for package main. | — |
 | `Lint/SlogContextual` | Use contextual slog calls when a context is available. | — |
 | `Lint/ConstructorPurity` | Avoid starting goroutines in constructors. | — |
 | `Lint/ConstructorNetworkIO` | Avoid network I/O in constructors. | — |
@@ -30,6 +34,10 @@ cops program-backed: they need resolved imports or cross-file information.
 
 ```go
 fileCops := []cop.Cop{
+    cops.NewLintContextFirstParameter(),
+    cops.NewLintNoContextField(),
+    cops.NewLintHTTPRequestWithContext(),
+    cops.NewLintNoFatalOutsideMain(),
     cops.NewLintSlogContextual(),
     cops.NewLintWrapErrors(),
     cops.NewLintNewExpr(),
@@ -71,6 +79,31 @@ use newer APIs or load Go 1.27 modules.
 ## Examples and limitations
 
 These cops report suggestions, not automatic fixes.
+
+### Context usage and process termination
+
+These four file cops skip test files. Matching is syntactic: import and type
+aliases are not resolved, and unrelated identifiers with the expected spelling
+can match. Add `cop.WithScope` to restrict them to selected production directories;
+no project-specific directory exclusions are built in.
+
+- **ContextFirstParameter:** `func run(id string, ctx context.Context)` →
+  `func run(ctx context.Context, id string)`. Checks the first syntactic context
+  parameter in function and method declarations, including bodyless declarations.
+  Function literals, function types, and interface signatures are excluded.
+- **NoContextField:** replace `type Service struct { ctx context.Context }` with
+  context parameters on operations. Checks direct fields, including embedded
+  contexts, in top-level named structs. Local and nested anonymous structs,
+  pointer fields, and containers are excluded. Deliberate context wrappers may
+  need suppression.
+- **HTTPRequestWithContext:** `http.NewRequest(...)` →
+  `http.NewRequestWithContext(ctx, ...)`. Reports construction even if `WithContext`
+  or `Clone` attaches a context later. Does not prove caller-context propagation or
+  inspect other HTTP APIs.
+- **NoFatalOutsideMain:** return an error instead of calling `log.Fatal`, `Fatalf`,
+  or `Fatalln` in library code. All of **package main** is exempt, including helpers
+  and `init`, not just `func main`. Logger instance methods and other termination
+  APIs are excluded.
 
 ### Logging, errors, and lifecycle
 
