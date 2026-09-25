@@ -25,10 +25,12 @@ func TestSharedCopMetadata(t *testing.T) {
 		NewLintSlogContextual(), NewLintConstructorPurity(), NewLintConstructorNetworkIO(),
 		NewLintWrapErrors(), NewLintErrorStringMatching(), NewLintDeferMutexUnlock(), NewLintNewExpr(),
 		NewLintContextFirstParameter(), NewLintNoContextField(), NewLintHTTPRequestWithContext(), NewLintNoFatalOutsideMain(),
+		NewLintNoStdoutInLibraries(),
 	}
 	programCops := []prog.Cop{
 		NewLintPointerHelper(), NewLintReflectFields(), NewLintStdlibUUID(), NewLintURLClone(),
 		NewLintJSONMarshalWrite(), NewLintBenchmarkLoop(), NewLintSplitTrimJoin(), NewLintFieldsSeq(), NewLintStreamCloseSafety(),
+		NewLintConstructorCommandExec(), NewLintCutPrefix(), NewLintCutSuffix(), NewLintFieldsSeqLookup(), NewLintSlicesClone(), NewLintSortStableFunc(),
 	}
 	doc, err := os.ReadFile("../docs/shared-cops.md")
 	require.NoError(t, err)
@@ -48,7 +50,7 @@ func TestSharedCopMetadata(t *testing.T) {
 	for _, c := range programCops {
 		check(c.Name(), c.Description())
 	}
-	assert.Len(t, names, 20)
+	assert.Len(t, names, 27)
 	for _, c := range All() {
 		assert.False(t, names[c.Name()], "shared cops are explicitly selected, not enabled by default")
 	}
@@ -72,6 +74,11 @@ func TestModernizationMinimumVersions(t *testing.T) {
 		{"benchmark", "go1.24", "p_test.go", benchmarkLoopFixture, newBenchmarkLoopFile},
 		{"split", "go1.27", "p.go", splitTrimFixture, newSplitTrimJoinFile},
 		{"fields", "go1.24", "p.go", fieldsSeqFixture, newFieldsSeqFile},
+		{"prefix", "go1.20", "p.go", cutPrefixFixture, newCutPrefixFile},
+		{"suffix", "go1.20", "p.go", cutSuffixFixture, newCutSuffixFile},
+		{"lookup", "go1.24", "p.go", fieldsSeqLookupFixture, newFieldsSeqLookupFile},
+		{"clone", "go1.21", "p.go", slicesCloneFixture, newSlicesCloneFile},
+		{"sort", "go1.21", "p.go", sortStableFuncFixture, newSortStableFuncFile},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := tc.new()
@@ -98,7 +105,7 @@ func TestModernizationMinimumVersions(t *testing.T) {
 			cfg := types.Config{Importer: importer.Default()}
 			pkg, err := cfg.Check("fixture", fset, []*ast.File{file}, info)
 			require.NoError(t, err)
-			for _, target := range []string{"", "go1.23", tc.minimum, "go1.28"} {
+			for _, target := range []string{"", "go1.19", "go1.20", "go1.21", "go1.23", tc.minimum, "go1.28"} {
 				info.FileVersions[file] = target
 				pass := &cop.Pass{Cop: c, FileSet: fset, File: file, Info: info, Package: pkg}
 				c.Check(pass)

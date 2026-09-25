@@ -13,6 +13,8 @@ The catalog descriptions match each cop's `Meta.Description`.
 | `Lint/SlogContextual` | Use contextual slog calls when a context is available. | — |
 | `Lint/ConstructorPurity` | Avoid starting goroutines in constructors. | — |
 | `Lint/ConstructorNetworkIO` | Avoid network I/O in constructors. | — |
+| `Lint/ConstructorCommandExec` | Avoid preparing or executing external commands in constructors. | — |
+| `Lint/NoStdoutInLibraries` | Use caller-provided writers instead of stdout in library packages. | — |
 | `Lint/WrapErrors` | Preserve error chains when formatting errors. | — |
 | `Lint/ErrorStringMatching` | Prefer structured error checks over matching error text. | — |
 | `Lint/DeferMutexUnlock` | Prefer deferred unlocking for terminal critical sections. | — |
@@ -25,6 +27,11 @@ The catalog descriptions match each cop's `Meta.Description`.
 | `Lint/BenchmarkLoop` | Consider b.Loop for simple benchmark loops. | 1.24+ |
 | `Lint/SplitTrimJoin` | Use strings.CutLast to remove trailing segments without splitting. | 1.27+ |
 | `Lint/FieldsSeq` | Use strings.FieldsSeq when fields are only iterated once. | 1.24+ |
+| `Lint/CutPrefix` | Use strings.CutPrefix for paired prefix checks and removals. | 1.20+ |
+| `Lint/CutSuffix` | Use strings.CutSuffix for paired suffix checks and removals. | 1.20+ |
+| `Lint/FieldsSeqLookup` | Use strings.FieldsSeq for first-field and membership lookups. | 1.24+ |
+| `Lint/SlicesClone` | Consider slices.Clone for shallow copies, preserving nilness, types, and capacity contracts. | 1.21+ |
+| `Lint/SortStableFunc` | Use slices.SortStableFunc for simple integer and string comparisons. | 1.21+ |
 | `Lint/StreamCloseSafety` | Flag potentially unsynchronized field access between Close and Next/Recv. | — |
 
 ## Embedding
@@ -41,9 +48,16 @@ fileCops := []cop.Cop{
     cops.NewLintSlogContextual(),
     cops.NewLintWrapErrors(),
     cops.NewLintNewExpr(),
+    cops.NewLintNoStdoutInLibraries(),
 }
 programCops := []prog.Cop{
+    cops.NewLintConstructorCommandExec(),
     cops.NewLintFieldsSeq(),
+    cops.NewLintFieldsSeqLookup(),
+    cops.NewLintCutPrefix(),
+    cops.NewLintCutSuffix(),
+    cops.NewLintSlicesClone(),
+    cops.NewLintSortStableFunc(),
     cops.NewLintBenchmarkLoop(),
     cops.NewLintStreamCloseSafety(),
 }
@@ -63,7 +77,7 @@ check := cops.NewLintURLClone(
 
 Project-specific exclusions belong in the consumer. No configuration directories
 or module paths are implicitly exempt. Several modernization cops skip generated
-code; `FieldsSeq` and `SplitTrimJoin` retain their broader coverage. Add a scope
+code; `FieldsSeq`, `FieldsSeqLookup`, and `SplitTrimJoin` retain their broader coverage. Add a scope
 if your project excludes generated files from those checks too.
 
 Version requirements use the target module and file build constraints, never the
@@ -116,6 +130,22 @@ no project-specific directory exclusions are built in.
   operation. Covers selected `net`/`net/http` APIs, not every network method.
   Network I/O and background work in constructors can be intentional; opt in
   only when this matches your lifecycle policy.
+- **ConstructorCommandExec:** move `exec.Command(...)` and `cmd.Run()` from
+  constructors to explicit operations. Covers `Command`, `CommandContext`, and
+  resolved `exec.Cmd` methods `Start`, `Run`, `Output`, and `CombinedOutput`,
+  including aliases and promoted methods. Unlike the original Docker cop,
+  unrelated methods named `Run` or `Start` are not reported. Without types, only
+  syntactic `exec.Command`/`CommandContext` calls match. Immediate and deferred
+  closures are checked; stored closures and indirect helpers are not. Goroutine
+  bodies are excluded, but their synchronously evaluated receivers and arguments
+  are checked. Preparing a command does not itself start a process; this is an
+  opt-in lifecycle policy, not proof of process execution.
+- **NoStdoutInLibraries:** `fmt.Println(...)` or `fmt.Fprintln(os.Stdout, ...)` →
+  write to a caller-provided `io.Writer`. All non-main packages are candidates,
+  not just a `pkg/` directory; tests are excluded. Matching is syntactic, so
+  import aliases are not resolved and shadowed identifiers can match. Other
+  stdout-writing APIs are not covered. Selecting `Lint/FmtPrint` as well can
+  produce overlapping diagnostics.
 - **WrapErrors:** `fmt.Errorf("read: %v", err)` → `fmt.Errorf("read: %w", err)`.
   Checks builtin `error` arguments and leaves calls already containing `%w`
   alone. Deliberate error abstraction boundaries may need suppression.
@@ -163,3 +193,36 @@ no project-specific directory exclusions are built in.
   `for word := range strings.FieldsSeq(input)`. Preserve original input evaluation
   and empty-input fallbacks. Mutable byte slices, callbacks, repeated traversal,
   indexing, and direct `recover` calls are excluded.
+
+- **CutPrefix:** `if strings.HasPrefix(s, prefix) { return strings.TrimPrefix(s, prefix) }`
+  → `if rest, ok := strings.CutPrefix(s, prefix); ok { return rest }`.
+  Also recognizes string slices at matching byte offsets, exit guards, and selected
+  tagless switch cases. Preserve short-circuit evaluation and assignments to
+  existing variables. Calls or mutations between the check and removal,
+  fallthrough cases, and named-string slices are excluded.
+- **CutSuffix:** the corresponding `HasSuffix` plus `TrimSuffix` or
+  `s[:len(s)-len(suffix)]` → `strings.CutSuffix`. Restricted to adjacent uses of
+  local strings or constants, with optional pure string wrappers. Preserve
+  original values, assignment scope, and evaluation order. Compound conditions,
+  field/index sources, and named-string slices are excluded.
+- **FieldsSeqLookup:** guarded `words := strings.Fields(s); ...; words[0]` →
+  extract the first field with `FieldsSeq` at the original declaration, retaining
+  the empty-input fallback. `slices.Contains(strings.Fields(s), word)` → iterate
+  until a match. Evaluate input and search value once, in their original order,
+  even for empty input. Keep surrounding calls and fallback code outside the
+  iterator body. Bytes, predicates, escaping slices, and other slice uses are
+  excluded. Complements `FieldsSeq` without reporting its range-loop patterns.
+- **SlicesClone:** `append([]T(nil), source...)` or adjacent `make`/`copy` →
+  consider `slices.Clone(source)`. This is **not** a mechanical replacement:
+  nil-destination append yields nil for non-nil empty input, while Clone preserves
+  source nilness; empty-literal append and make/copy can return non-nil for nil
+  input. Preserve the destination's named type and any capacity contract too.
+  Includes production, internal tests, external tests, and test-only packages;
+  generated code is excluded. Explicit capacity and effectful repeated sources
+  are not matched.
+- **SortStableFunc:** simple `sort.SliceStable` callbacks comparing integer or
+  string keys → `slices.SortStableFunc` with `cmp.Compare`. Reverse arguments for
+  descending keys and preserve lazy tie-break evaluation; eagerly computing all
+  comparisons can dereference nil pointers that the original never touched.
+  Floating-point keys (NaN ordering), effectful callbacks, tests, and generated
+  code are excluded.

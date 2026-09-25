@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -163,4 +164,73 @@ func TestBenchmarkLoopConfiguredScope(t *testing.T) {
 	require.Len(t, offenses, 1)
 	assert.Equal(t, "bench_test.go", filepath.Base(offenses[0].Pos.Filename))
 	assert.NotContains(t, offenses[0].Pos.Filename, "/legacy/")
+}
+
+func TestExtractedCopsRunnerPolicy(t *testing.T) {
+	dir := t.TempDir()
+	fixtures := map[string]string{
+		"Lint/CutPrefix":       cutPrefixFixture,
+		"Lint/CutSuffix":       cutSuffixFixture,
+		"Lint/FieldsSeqLookup": fieldsSeqLookupFixture,
+		"Lint/SlicesClone":     slicesCloneFixture,
+		"Lint/SortStableFunc":  sortStableFuncFixture,
+		"Lint/ConstructorCommandExec": `package p
+import process "os/exec"
+type Cmd = process.Cmd
+func NewCmd(cmd *Cmd) error { return cmd.Run() }
+func New() *Cmd { return process.Command("echo") }
+`,
+		"Lint/NoStdoutInLibraries": "package p\nimport \"fmt\"\nfunc f() { fmt.Println(\"hello\") }\n",
+	}
+	cfg := config.DefaultConfig()
+	for name, src := range fixtures {
+		cfg.Cops[name] = config.CopConfig{Severity: "warning"}
+		slug := strings.TrimPrefix(name, "Lint/")
+		for prefix, content := range map[string]string{
+			"active":     src,
+			"legacy":     src,
+			"suppressed": "//rubocop:disable-file " + name + "\n" + src,
+			"inline":     src,
+		} {
+			if prefix == "inline" {
+				lines := strings.Split(src, "\n")
+				for i := range lines {
+					lines[i] += " //rubocop:disable " + name
+				}
+				content = strings.Join(lines, "\n")
+			}
+			path := filepath.Join(dir, prefix, slug, "p.go")
+			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+			require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+		}
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.test\n\ngo 1.26\n"), 0o600))
+	t.Chdir(dir)
+	scope := cop.WithScope(cop.Not(cop.UnderDir("legacy")))
+	var output bytes.Buffer
+	r := runner.New([]cop.Cop{NewLintNoStdoutInLibraries(scope)}, cfg, &output).
+		WithProgramCops([]prog.Cop{
+			NewLintConstructorCommandExec(scope), NewLintCutPrefix(scope), NewLintCutSuffix(scope),
+			NewLintFieldsSeqLookup(scope), NewLintSlicesClone(scope), NewLintSortStableFunc(scope),
+		})
+	r.Reporter = runner.NewJSONReporter(&output)
+	count, err := r.Run([]string{dir})
+	require.NoError(t, err)
+	require.Equal(t, 8, count, output.String())
+	var result struct {
+		Offenses []struct {
+			Cop, Severity, File string
+			EndColumn           int `json:"end_column"`
+		}
+	}
+	require.NoError(t, json.Unmarshal(output.Bytes(), &result))
+	seen := make(map[string]int)
+	for _, offense := range result.Offenses {
+		seen[offense.Cop]++
+		assert.Equal(t, "warning", offense.Severity)
+		assert.Contains(t, filepath.ToSlash(offense.File), "/active/")
+		assert.Positive(t, offense.EndColumn)
+	}
+	require.Len(t, seen, len(fixtures))
+	assert.Equal(t, 2, seen["Lint/ConstructorCommandExec"])
 }
