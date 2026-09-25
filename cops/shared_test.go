@@ -24,6 +24,7 @@ func TestSharedCopMetadata(t *testing.T) {
 	fileCops := []cop.Cop{
 		NewLintSlogContextual(), NewLintConstructorPurity(), NewLintConstructorNetworkIO(),
 		NewLintWrapErrors(), NewLintErrorStringMatching(), NewLintDeferMutexUnlock(), NewLintNewExpr(),
+		NewLintContextFirstParameter(), NewLintNoContextField(), NewLintHTTPRequestWithContext(), NewLintNoFatalOutsideMain(),
 	}
 	programCops := []prog.Cop{
 		NewLintPointerHelper(), NewLintReflectFields(), NewLintStdlibUUID(), NewLintURLClone(),
@@ -47,7 +48,7 @@ func TestSharedCopMetadata(t *testing.T) {
 	for _, c := range programCops {
 		check(c.Name(), c.Description())
 	}
-	assert.Len(t, names, 16)
+	assert.Len(t, names, 20)
 	for _, c := range All() {
 		assert.False(t, names[c.Name()], "shared cops are explicitly selected, not enabled by default")
 	}
