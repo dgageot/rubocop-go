@@ -27,6 +27,12 @@ func TestModernizationLanguageAndAPIVersions(t *testing.T) {
 		{"reflect needs range syntax", "go1.22", reflectFieldsFixture, newReflectFieldsFile(), 0},
 		{"fields uses module APIs", "go1.23", fieldsSeqFixture, newFieldsSeqFile(), 1},
 		{"fields needs range syntax", "go1.22", fieldsSeqFixture, newFieldsSeqFile(), 0},
+		{"lookup uses module APIs", "go1.23", fieldsSeqLookupFixture, newFieldsSeqLookupFile(), 1},
+		{"lookup needs range syntax", "go1.22", fieldsSeqLookupFixture, newFieldsSeqLookupFile(), 0},
+		{"prefix uses module APIs", "go1.21", cutPrefixFixture, newCutPrefixFile(), 1},
+		{"suffix uses module APIs", "go1.21", cutSuffixFixture, newCutSuffixFile(), 1},
+		{"clone uses module APIs", "go1.21", slicesCloneFixture, newSlicesCloneFile(), 1},
+		{"sort uses module APIs", "go1.21", sortStableFuncFixture, newSortStableFuncFile(), 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fset := token.NewFileSet()
