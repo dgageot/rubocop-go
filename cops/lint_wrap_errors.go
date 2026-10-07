@@ -35,7 +35,7 @@ func NewLintWrapErrors(opts ...cop.FuncOption) *cop.Func {
 				return
 			}
 			p.ForEachCall(func(call *ast.CallExpr) {
-				if !cop.IsCallTo(call, "fmt", "Errorf") || len(call.Args) < 2 {
+				if _, match := standardLibraryCall(p, call, "fmt", "Errorf"); !match || len(call.Args) < 2 {
 					return
 				}
 				format, ok := stringLit(call.Args[0])
@@ -110,7 +110,7 @@ func isErrorType(t types.Type) bool {
 	if t == nil {
 		return false
 	}
-	named, ok := t.(*types.Named)
+	named, ok := types.Unalias(t).(*types.Named)
 	if !ok {
 		return false
 	}
