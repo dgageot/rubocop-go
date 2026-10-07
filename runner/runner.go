@@ -4,6 +4,7 @@ package runner
 import (
 	"fmt"
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
 	"go/types"
@@ -301,6 +302,7 @@ func typeCheck(fset *token.FileSet, dir string, files []*ast.File) (*types.Info,
 
 	cfg := &types.Config{
 		GoVersion: moduleGoVersion(dir),
+		Importer:  importer.Default(),
 		// Ignore import errors — we just want the type info we can get.
 		Error: func(error) {},
 	}
