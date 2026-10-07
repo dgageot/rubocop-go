@@ -1,12 +1,15 @@
 package cops
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/dgageot/rubocop-go/coptest"
+	"github.com/dgageot/rubocop-go/prog"
 )
 
 func TestStdlibUUID(t *testing.T) {
@@ -28,6 +31,9 @@ func TestStdlibUUID(t *testing.T) {
 import id "github.com/google/uuid"
 func f(s string) {
  _ = id.NewString()
+ defer id.NewString()
+ go id.NewString()
+ defer func(string){}(id.NewString())
  _ = id.MustParse("6f0c2a1e-8d4b-4c7f-9a3e-2b5d7e9f1c03")
  _ = id.New().String()
  _ = id.MustParse("6f0c2a1e-8d4b-4c7f-9a3e-2b5d7e9f1c03").String()
@@ -56,7 +62,7 @@ import "github.com/google/uuid"
 var generated = uuid.NewString()
 `,
 	})
-	require.Len(t, offenses, 4)
+	require.Len(t, offenses, 5)
 	for _, offense := range offenses {
 		assert.Equal(t, "Lint/StdlibUUID", offense.CopName)
 	}
@@ -90,4 +96,28 @@ func TestStdlibUUIDCustomRandomness(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestStdlibUUIDImportedRandomness(t *testing.T) {
+	requireGo127(t)
+	t.Parallel()
+	dir := t.TempDir()
+	for path, src := range map[string]string{
+		"go.mod":               "module example.test\n\ngo 1.27\nrequire github.com/google/uuid v0.0.0\nreplace github.com/google/uuid => ./google\n",
+		"google/go.mod":        "module github.com/google/uuid\n\ngo 1.27\n",
+		"google/uuid.go":       `package uuid; func NewString()string{return "id"}; func SetRand(){}`,
+		"p.go":                 `package p; import("github.com/google/uuid"; _ "example.test/randomness");func ID()string{return uuid.NewString()}`,
+		"randomness/random.go": `package randomness;import "github.com/google/uuid";func init(){uuid.SetRand()}`,
+	} {
+		filename := filepath.Join(dir, path)
+		require.NoError(t, os.MkdirAll(filepath.Dir(filename), 0o700))
+		require.NoError(t, os.WriteFile(filename, []byte(src), 0o600))
+	}
+	program, err := prog.LoadDir(dir, ".")
+	require.NoError(t, err)
+	require.Len(t, program.Packages, 1)
+	c := NewLintStdlibUUID()
+	p := &prog.Pass{Cop: c, Program: program}
+	c.Check(p)
+	assert.Empty(t, p.Offenses())
 }

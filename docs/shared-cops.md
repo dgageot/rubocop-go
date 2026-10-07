@@ -176,7 +176,9 @@ no project-specific directory exclusions are built in.
   `uuid.NewV4().String()`. Only compatible string-producing patterns are matched;
   exposed UUID types, UUIDv5, and general parsing are excluded. Randomness
   configuration in production or tests suppresses recommendations, even when
-  those files are outside the configured candidate scope.
+  those files are outside the configured candidate scope. Imported dependencies
+  are included in the randomness check. Direct deferred and goroutine `NewString`
+  calls are excluded because a method-call replacement changes generation timing.
 - **URLClone:** replace an equivalent nil-safe deep-copy helper with `u.Clone()`.
   Ordinary shallow copies are excluded because cloning also copies userinfo.
 - **JSONMarshalWrite:** buffered `Encoder.Encode` followed by newline trimming →
