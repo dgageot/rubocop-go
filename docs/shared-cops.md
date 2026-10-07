@@ -160,6 +160,8 @@ no project-specific directory exclusions are built in.
   or make them reader-owned. Opt in only for APIs whose contract permits these
   methods to run concurrently. The analysis follows receiver fields and helpers
   with common mutexes, not arbitrary aliases, containers, or cancellation.
+  Helper unlocks invalidate caller lock guarantees; helper-acquired locks do not
+  establish them. Deferred and asynchronous effects are checked conservatively.
 
 ### Modernization
 
