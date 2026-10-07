@@ -2,7 +2,9 @@ package cops
 
 import (
 	"go/ast"
+	"go/token"
 	"go/types"
+	"strings"
 
 	"github.com/dgageot/rubocop-go/cop"
 )
@@ -35,17 +37,16 @@ func NewLintCloneCompleteness() *cop.Func {
 
 			// Collect all fields that need deep copying (pointer, slice, map),
 			// including fields from embedded structs (flattened).
-			needsCopy := deepCopyFields(recvType)
+			needsCopy := cloneFields(recvType, p.Package)
 			if len(needsCopy) == 0 {
 				return
 			}
 
-			// Collect field names referenced in the Clone body.
-			referenced := referencedFields(fn.Body)
+			handled := handledCloneFields(fn.Body, p.Info, recvType)
 
-			for _, name := range needsCopy {
-				if !referenced[name] {
-					p.Reportf(fn.Name, "Clone() does not copy field '%s' (pointer/slice/map)", name)
+			for _, field := range needsCopy {
+				if !handled[field.name] {
+					p.Reportf(fn.Name, "Clone() does not copy field '%s' (pointer/slice/map)", field.name)
 				}
 			}
 		})
@@ -79,38 +80,40 @@ func resolveRecvStruct(fn *ast.FuncDecl, info *types.Info) *types.Struct {
 	return st
 }
 
-// deepCopyFields returns the names of all fields in st (including fields from
-// embedded structs) whose types are pointers, slices, or maps.
-func deepCopyFields(st *types.Struct) []string {
-	var names []string
-	for f := range st.Fields() {
-		// If embedded struct, recurse into it.
-		if f.Embedded() {
-			if inner := embeddedStruct(f.Type()); inner != nil {
-				names = append(names, deepCopyFields(inner)...)
+type cloneField struct {
+	name string
+}
+
+// Embedded pointers are copy obligations themselves, not recursive struct walks.
+func cloneFields(st *types.Struct, pkg *types.Package) []cloneField {
+	var fields []cloneField
+	var walk func(*types.Struct, string)
+	walk = func(st *types.Struct, prefix string) {
+		for field := range st.Fields() {
+			if !field.Exported() && field.Pkg() != pkg {
 				continue
 			}
-		}
-
-		// Skip unexported fields — Clone() methods typically can't (and
-		// shouldn't) deep-copy unexported fields from other packages, and
-		// for same-package unexported fields with non-reference types
-		// (e.g. sync.Mutex) a copy is intentionally skipped.
-		if !f.Exported() {
-			continue
-		}
-
-		if needsDeepCopy(f.Type()) {
-			names = append(names, f.Name())
+			name := prefix + field.Name()
+			if needsDeepCopy(field.Type()) {
+				fields = append(fields, cloneField{name: name})
+			} else if field.Embedded() {
+				if inner := embeddedStruct(field.Type()); inner != nil {
+					walk(inner, name+".")
+				}
+			}
 		}
 	}
-	return names
+	walk(st, "")
+	return fields
 }
 
 // embeddedStruct unwraps a (possibly pointer, possibly named) type down to
 // a *types.Struct, or returns nil.
 func embeddedStruct(t types.Type) *types.Struct {
-	t = deref(t)
+	if t == nil {
+		return nil
+	}
+	t = deref(types.Unalias(t))
 	if named, ok := t.(*types.Named); ok {
 		t = named.Underlying()
 	}
@@ -137,16 +140,153 @@ func deref(t types.Type) types.Type {
 	return t
 }
 
-// referencedFields collects all selector names used in a function body.
-// e.g. for `x.Foo` it records "Foo".
-func referencedFields(body *ast.BlockStmt) map[string]bool {
-	refs := make(map[string]bool)
+// Look for destination writes, keeping distinct embedding paths separate.
+func handledCloneFields(body *ast.BlockStmt, info *types.Info, receiver *types.Struct) map[string]bool {
+	handled := make(map[string]bool)
+	var mark func(string, *types.Var, ast.Expr)
+	var literal func(*ast.CompositeLit, string)
+	mark = func(path string, field *types.Var, value ast.Expr) {
+		if shallowCloneSource(value, info) {
+			return
+		}
+		if needsDeepCopy(field.Type()) {
+			handled[path] = true
+			return
+		}
+		if !field.Embedded() {
+			return
+		}
+		value = ast.Unparen(value)
+		if cl, ok := value.(*ast.CompositeLit); ok {
+			literal(cl, path+".")
+			return
+		}
+		if _, ok := value.(*ast.CallExpr); ok {
+			if inner := embeddedStruct(field.Type()); inner != nil {
+				for _, nested := range cloneFields(inner, field.Pkg()) {
+					handled[path+"."+nested.name] = true
+				}
+			}
+		}
+	}
+	literal = func(cl *ast.CompositeLit, prefix string) {
+		st := embeddedStruct(info.TypeOf(cl))
+		if st == nil {
+			return
+		}
+		for index, elt := range cl.Elts {
+			var field *types.Var
+			value := elt
+			if kv, ok := elt.(*ast.KeyValueExpr); ok {
+				key, ok := kv.Key.(*ast.Ident)
+				if !ok {
+					continue
+				}
+				value = kv.Value
+				for candidate := range st.Fields() {
+					if candidate.Name() == key.Name {
+						field = candidate
+						break
+					}
+				}
+			} else if index < st.NumFields() {
+				field = st.Field(index)
+			}
+			if field != nil {
+				mark(prefix+field.Name(), field, value)
+			}
+		}
+	}
 	ast.Inspect(body, func(n ast.Node) bool {
-		sel, ok := n.(*ast.SelectorExpr)
-		if ok {
-			refs[sel.Sel.Name] = true
+		switch node := n.(type) {
+		case *ast.AssignStmt:
+			for i, lhs := range node.Lhs {
+				path, field := cloneDestination(lhs, info, receiver)
+				if field == nil {
+					continue
+				}
+				if len(node.Rhs) == len(node.Lhs) {
+					mark(path, field, node.Rhs[i])
+				} else if len(node.Rhs) == 1 {
+					if tuple, ok := info.TypeOf(node.Rhs[0]).(*types.Tuple); ok && i < tuple.Len() && types.AssignableTo(tuple.At(i).Type(), field.Type()) {
+						mark(path, field, node.Rhs[0])
+					}
+				}
+			}
+		case *ast.CompositeLit:
+			if embeddedStruct(info.TypeOf(node)) == receiver {
+				literal(node, "")
+			}
+		case *ast.CallExpr:
+			if id, ok := ast.Unparen(node.Fun).(*ast.Ident); ok && info.Uses[id] == types.Universe.Lookup("copy") && len(node.Args) == 2 {
+				if path, field := cloneDestination(node.Args[0], info, receiver); field != nil {
+					handled[path] = true
+				}
+			}
 		}
 		return true
 	})
-	return refs
+	return handled
+}
+
+func shallowCloneSource(value ast.Expr, info *types.Info) bool {
+	value = ast.Unparen(value)
+	switch expr := value.(type) {
+	case *ast.Ident:
+		return expr.Name == "nil"
+	case *ast.UnaryExpr:
+		if expr.Op == token.AND {
+			_, field := ast.Unparen(expr.X).(*ast.SelectorExpr)
+			return field
+		}
+	case *ast.SelectorExpr:
+		if field, ok := info.Uses[expr.Sel].(*types.Var); ok {
+			return needsDeepCopy(field.Type()) || embeddedStruct(field.Type()) != nil
+		}
+	case *ast.SliceExpr:
+		return shallowCloneSource(expr.X, info)
+	}
+	return false
+}
+
+func cloneDestination(expr ast.Expr, info *types.Info, receiver *types.Struct) (string, *types.Var) {
+	expr = ast.Unparen(expr)
+	sel, ok := expr.(*ast.SelectorExpr)
+	if !ok {
+		return "", nil
+	}
+	var prefix string
+	if parent, ok := ast.Unparen(sel.X).(*ast.SelectorExpr); ok {
+		path, field := cloneDestination(parent, info, receiver)
+		if field == nil {
+			return "", nil
+		}
+		prefix = path + "."
+	} else if embeddedStruct(info.TypeOf(sel.X)) != receiver {
+		return "", nil
+	}
+	var pkg *types.Package
+	if obj := info.Uses[sel.Sel]; obj != nil {
+		pkg = obj.Pkg()
+	}
+	obj, indices, _ := types.LookupFieldOrMethod(info.TypeOf(sel.X), true, pkg, sel.Sel.Name)
+	field, ok := obj.(*types.Var)
+	if !ok {
+		return "", nil
+	}
+	st := embeddedStruct(info.TypeOf(sel.X))
+	var path strings.Builder
+	path.WriteString(prefix)
+	for i, index := range indices {
+		if st == nil || index >= st.NumFields() {
+			return "", nil
+		}
+		member := st.Field(index)
+		path.WriteString(member.Name())
+		if i < len(indices)-1 {
+			path.WriteByte('.')
+			st = embeddedStruct(member.Type())
+		}
+	}
+	return path.String(), field
 }

@@ -137,3 +137,32 @@ func (p *Point) Clone() *Point {
 	offenses := coptest.RunTyped(t, cops.NewLintCloneCompleteness(), src)
 	assert.Empty(t, offenses)
 }
+
+func TestLintCloneCompletenessRegressions(t *testing.T) {
+	for _, tc := range []struct {
+		name, src string
+		want      int
+	}{
+		{"recursive embedding", `type Node struct{ *Node }; func(n *Node) Clone()*Node{return n}`, 1},
+		{"mutual embedding", `type A struct{ *B }; type B struct{ *A }; func(a *A) Clone()*A{return a}`, 1},
+		{"shallow literal", `type C struct{ Items []int }; func(c *C) Clone()*C{return &C{Items:c.Items}}`, 1},
+		{"shallow assignment", `type C struct{ Items []int }; func(c *C) Clone()*C{d:=*c;d.Items=c.Items;return &d}`, 1},
+		{"unrelated selector", `type C struct{ Items []int }; func(c *C) Clone()*C{x:=struct{Items int}{1};_=x.Items;return &C{}}`, 1},
+		{"unrelated literal", `type C struct{ Items []int }; func(c *C) Clone()*C{_=struct{Items []int}{Items:[]int{1}};return &C{}}`, 1},
+		{"private references", `type C struct{ items []int; labels map[string]int; value *int }; func(c *C) Clone()*C{return &C{}}`, 3},
+		{"explicit copy", `type C struct{ items []int }; func(c *C) Clone()*C{d:=*c;d.items=make([]int,len(c.items));copy(d.items,c.items);return &d}`, 0},
+		{"shallow embedded literal", `type Base struct{Items []int};type C struct{Base};func(c *C)Clone()*C{return &C{Base:c.Base}}`, 1},
+		{"shallow embedded assignment", `type Base struct{Items []int};type C struct{Base};func(c *C)Clone()*C{d:=*c;d.Base=c.Base;return &d}`, 1},
+		{"reslice", `type C struct{Items []int};func(c *C)Clone()*C{return &C{Items:c.Items[:]}}`, 1},
+		{"address of receiver field", `type C struct{Value int;Ptr *int};func(c *C)Clone()*C{return &C{Ptr:&c.Value}}`, 1},
+		{"distinct embeddings", `type Base struct{Items []int};type A struct{Base};type B struct{Base};type C struct{A;B};func(c *C)Clone()*C{d:=*c;d.A.Items=append([]int(nil),c.A.Items...);return &d}`, 1},
+		{"positional literal", `type C struct{Items []int};func(c *C)Clone()*C{items:=make([]int,len(c.Items));copy(items,c.Items);return &C{items}}`, 0},
+		{"tuple assignment", `type C struct{Items []int};func cloneItems(s []int)([]int,error){return append([]int(nil),s...),nil};func(c *C)Clone()*C{d:=*c;var err error;d.Items,err=cloneItems(c.Items);_=err;return &d}`, 0},
+		{"nested literal", `type Base struct{Items []int};type C struct{Base};func(c *C)Clone()*C{return &C{Base:Base{Items:append([]int(nil),c.Items...)}}}`, 0},
+		{"value fields", `type C struct{ count int }; func(c *C) Clone()*C{d:=*c;return &d}`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Len(t, coptest.RunTyped(t, cops.NewLintCloneCompleteness(), "package sample\n"+tc.src), tc.want)
+		})
+	}
+}
