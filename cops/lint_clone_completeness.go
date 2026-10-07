@@ -30,19 +30,24 @@ func NewLintCloneCompleteness() *cop.Func {
 			}
 
 			// Resolve the receiver's underlying struct type, unwrapping pointers.
-			recvType := resolveRecvStruct(fn, p.Info)
-			if recvType == nil {
+			recvType := cloneValueType(p.Info.TypeOf(fn.Recv.List[0].Type))
+			recvStruct := embeddedStruct(recvType)
+			if recvStruct == nil {
 				return
 			}
 
 			// Collect all fields that need deep copying (pointer, slice, map),
 			// including fields from embedded structs (flattened).
-			needsCopy := cloneFields(recvType, p.Package)
+			needsCopy := cloneFields(recvStruct, p.Package)
 			if len(needsCopy) == 0 {
 				return
 			}
 
-			handled := handledCloneFields(fn.Body, p.Info, recvType)
+			var source types.Object
+			if len(fn.Recv.List[0].Names) > 0 {
+				source = p.Info.Defs[fn.Recv.List[0].Names[0]]
+			}
+			handled := handledCloneFields(fn.Body, p.Info, recvType, source)
 
 			for _, field := range needsCopy {
 				if !handled[field.name] {
@@ -53,31 +58,12 @@ func NewLintCloneCompleteness() *cop.Func {
 	}, cop.WithTypes())
 }
 
-// resolveRecvStruct returns the *types.Struct underlying the receiver of fn,
-// unwrapping any pointer indirection. Returns nil if it's not a struct.
-func resolveRecvStruct(fn *ast.FuncDecl, info *types.Info) *types.Struct {
-	if len(fn.Recv.List) == 0 {
-		return nil
-	}
-
-	recvExpr := fn.Recv.List[0].Type
-	t := info.TypeOf(recvExpr)
+// Keep named-type identity when comparing clone destinations.
+func cloneValueType(t types.Type) types.Type {
 	if t == nil {
 		return nil
 	}
-
-	// Unwrap pointer.
-	if ptr, ok := t.(*types.Pointer); ok {
-		t = ptr.Elem()
-	}
-
-	// Unwrap named type.
-	if named, ok := t.(*types.Named); ok {
-		t = named.Underlying()
-	}
-
-	st, _ := t.(*types.Struct)
-	return st
+	return types.Unalias(deref(types.Unalias(t)))
 }
 
 type cloneField struct {
@@ -90,16 +76,18 @@ func cloneFields(st *types.Struct, pkg *types.Package) []cloneField {
 	var walk func(*types.Struct, string)
 	walk = func(st *types.Struct, prefix string) {
 		for field := range st.Fields() {
-			if !field.Exported() && field.Pkg() != pkg {
-				continue
-			}
 			name := prefix + field.Name()
-			if needsDeepCopy(field.Type()) {
-				fields = append(fields, cloneField{name: name})
-			} else if field.Embedded() {
+			if field.Embedded() && !needsDeepCopy(field.Type()) {
 				if inner := embeddedStruct(field.Type()); inner != nil {
 					walk(inner, name+".")
 				}
+				continue
+			}
+			if !field.Exported() && field.Pkg() != pkg {
+				continue
+			}
+			if needsDeepCopy(field.Type()) {
+				fields = append(fields, cloneField{name: name})
 			}
 		}
 	}
@@ -141,12 +129,12 @@ func deref(t types.Type) types.Type {
 }
 
 // Look for destination writes, keeping distinct embedding paths separate.
-func handledCloneFields(body *ast.BlockStmt, info *types.Info, receiver *types.Struct) map[string]bool {
+func handledCloneFields(body *ast.BlockStmt, info *types.Info, receiver types.Type, source types.Object) map[string]bool {
 	handled := make(map[string]bool)
 	var mark func(string, *types.Var, ast.Expr)
 	var literal func(*ast.CompositeLit, string)
 	mark = func(path string, field *types.Var, value ast.Expr) {
-		if shallowCloneSource(value, info) {
+		if shallowCloneSource(value, info, source) {
 			return
 		}
 		if needsDeepCopy(field.Type()) {
@@ -206,6 +194,9 @@ func handledCloneFields(body *ast.BlockStmt, info *types.Info, receiver *types.S
 					continue
 				}
 				if len(node.Rhs) == len(node.Lhs) {
+					if cloneSelfCopy(lhs, node.Rhs[i], info, receiver) {
+						continue
+					}
 					mark(path, field, node.Rhs[i])
 				} else if len(node.Rhs) == 1 {
 					if tuple, ok := info.TypeOf(node.Rhs[0]).(*types.Tuple); ok && i < tuple.Len() && types.AssignableTo(tuple.At(i).Type(), field.Type()) {
@@ -214,7 +205,7 @@ func handledCloneFields(body *ast.BlockStmt, info *types.Info, receiver *types.S
 				}
 			}
 		case *ast.CompositeLit:
-			if embeddedStruct(info.TypeOf(node)) == receiver {
+			if types.Identical(cloneValueType(info.TypeOf(node)), receiver) {
 				literal(node, "")
 			}
 		case *ast.CallExpr:
@@ -229,27 +220,26 @@ func handledCloneFields(body *ast.BlockStmt, info *types.Info, receiver *types.S
 	return handled
 }
 
-func shallowCloneSource(value ast.Expr, info *types.Info) bool {
+func shallowCloneSource(value ast.Expr, info *types.Info, source types.Object) bool {
 	value = ast.Unparen(value)
 	switch expr := value.(type) {
 	case *ast.Ident:
 		return expr.Name == "nil"
 	case *ast.UnaryExpr:
 		if expr.Op == token.AND {
-			_, field := ast.Unparen(expr.X).(*ast.SelectorExpr)
-			return field
+			return cloneSourceRoot(expr.X, info) == source && source != nil
 		}
 	case *ast.SelectorExpr:
 		if field, ok := info.Uses[expr.Sel].(*types.Var); ok {
-			return needsDeepCopy(field.Type()) || embeddedStruct(field.Type()) != nil
+			return source != nil && cloneSourceRoot(expr, info) == source && (needsDeepCopy(field.Type()) || embeddedStruct(field.Type()) != nil)
 		}
 	case *ast.SliceExpr:
-		return shallowCloneSource(expr.X, info)
+		return shallowCloneSource(expr.X, info, source)
 	}
 	return false
 }
 
-func cloneDestination(expr ast.Expr, info *types.Info, receiver *types.Struct) (string, *types.Var) {
+func cloneDestination(expr ast.Expr, info *types.Info, receiver types.Type) (string, *types.Var) {
 	expr = ast.Unparen(expr)
 	sel, ok := expr.(*ast.SelectorExpr)
 	if !ok {
@@ -262,7 +252,7 @@ func cloneDestination(expr ast.Expr, info *types.Info, receiver *types.Struct) (
 			return "", nil
 		}
 		prefix = path + "."
-	} else if embeddedStruct(info.TypeOf(sel.X)) != receiver {
+	} else if !types.Identical(cloneValueType(info.TypeOf(sel.X)), receiver) {
 		return "", nil
 	}
 	var pkg *types.Package
@@ -289,4 +279,39 @@ func cloneDestination(expr ast.Expr, info *types.Info, receiver *types.Struct) (
 		}
 	}
 	return path.String(), field
+}
+
+func cloneSourceRoot(expr ast.Expr, info *types.Info) types.Object {
+	switch expr := ast.Unparen(expr).(type) {
+	case *ast.Ident:
+		return info.Uses[expr]
+	case *ast.SelectorExpr:
+		return cloneSourceRoot(expr.X, info)
+	case *ast.IndexExpr:
+		return cloneSourceRoot(expr.X, info)
+	case *ast.SliceExpr:
+		return cloneSourceRoot(expr.X, info)
+	case *ast.UnaryExpr:
+		if expr.Op == token.AND {
+			return cloneSourceRoot(expr.X, info)
+		}
+	case *ast.StarExpr:
+		return cloneSourceRoot(expr.X, info)
+	}
+	return nil
+}
+
+// Assigning a destination field to itself does not detach its backing storage.
+func cloneSelfCopy(lhs, rhs ast.Expr, info *types.Info, receiver types.Type) bool {
+	rhs = ast.Unparen(rhs)
+	for {
+		slice, ok := rhs.(*ast.SliceExpr)
+		if !ok {
+			break
+		}
+		rhs = ast.Unparen(slice.X)
+	}
+	leftPath, leftField := cloneDestination(lhs, info, receiver)
+	rightPath, rightField := cloneDestination(rhs, info, receiver)
+	return leftField != nil && rightField != nil && leftPath == rightPath && cloneSourceRoot(lhs, info) == cloneSourceRoot(rhs, info)
 }

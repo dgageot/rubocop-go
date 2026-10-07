@@ -8,6 +8,7 @@ import (
 
 	"github.com/dgageot/rubocop-go/cops"
 	"github.com/dgageot/rubocop-go/coptest"
+	"github.com/dgageot/rubocop-go/prog"
 )
 
 func TestLintCloneCompleteness_MissingField(t *testing.T) {
@@ -159,10 +160,43 @@ func TestLintCloneCompletenessRegressions(t *testing.T) {
 		{"positional literal", `type C struct{Items []int};func(c *C)Clone()*C{items:=make([]int,len(c.Items));copy(items,c.Items);return &C{items}}`, 0},
 		{"tuple assignment", `type C struct{Items []int};func cloneItems(s []int)([]int,error){return append([]int(nil),s...),nil};func(c *C)Clone()*C{d:=*c;var err error;d.Items,err=cloneItems(c.Items);_=err;return &d}`, 0},
 		{"nested literal", `type Base struct{Items []int};type C struct{Base};func(c *C)Clone()*C{return &C{Base:Base{Items:append([]int(nil),c.Items...)}}}`, 0},
+		{"self reslice", `type C struct{Items []int};func(c *C)Clone()*C{d:=*c;d.Items=d.Items[:];return &d}`, 1},
+		{"self pointer", `type C struct{Ptr *int};func(c *C)Clone()*C{d:=*c;d.Ptr=d.Ptr;return &d}`, 1},
+		{"receiver address root", `type C struct{Items []int};func(c *C)Clone()*C{return &C{Items:(&*c).Items}}`, 1},
+		{"receiver sliced root", `type Holder struct{Items []int};type C struct{Items []int;Holders []Holder};func(c *C)Clone()*C{return &C{Items:c.Holders[:][0].Items,Holders:append([]Holder(nil),c.Holders...)}}`, 1},
+		{"destination pointer", `type C struct{Value int;Ptr *int};func(c *C)Clone()*C{d:=*c;d.Ptr=&d.Value;return &d}`, 0},
+		{"fresh holder", `type C struct{Items []int};func(c *C)Clone()*C{v:=struct{Items []int}{append([]int(nil),c.Items...)};return &C{Items:v.Items}}`, 0},
+		{"distinct defined literal", `type C struct{Items []int};type D C;func(c *C)Clone()*C{_=D{Items:[]int{1}};d:=*c;return &d}`, 1},
+		{"distinct defined assignment", `type C struct{Items []int};type D C;func(c *C)Clone()*C{var other D;other.Items=[]int{1};_=other;d:=*c;return &d}`, 1},
+		{"destination alias", `type C struct{Items []int};type D=C;func(c *C)Clone()*C{return &D{Items:append([]int(nil),c.Items...)}}`, 0},
 		{"value fields", `type C struct{ count int }; func(c *C) Clone()*C{d:=*c;return &d}`, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Len(t, coptest.RunTyped(t, cops.NewLintCloneCompleteness(), "package sample\n"+tc.src), tc.want)
+		})
+	}
+}
+
+func TestLintCloneCompletenessPrivateEmbedding(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, body string
+		want       int
+	}{
+		{"missing promoted field", `return c`, 1},
+		{"copied promoted field", `d:=*c;d.Items=append([]int(nil),c.Items...);return &d`, 0},
+		{"shallow promoted field", `d:=*c;d.Items=c.Items;return &d`, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			offenses := coptest.RunProgram(t, prog.FromFile(cops.NewLintCloneCompleteness()), coptest.ProgramFiles{
+				"base/base.go": `package base;type private struct{Items []int; hidden []int};type Base struct{private}`,
+				"p.go":         `package p;import "example.test/base";type C struct{base.Base};func(c *C)Clone()*C{` + tc.body + `}`,
+			})
+			assert.Len(t, offenses, tc.want)
+			for _, offense := range offenses {
+				assert.Contains(t, offense.Message, "Items")
+				assert.NotContains(t, offense.Message, "hidden")
+			}
 		})
 	}
 }
