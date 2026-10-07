@@ -12,6 +12,7 @@ package coptest
 
 import (
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
 	"go/types"
@@ -80,7 +81,10 @@ func RunTyped(t *testing.T, c cop.Cop, src string) []cop.Offense {
 		Uses:  make(map[*ast.Ident]types.Object),
 	}
 
-	cfg := &types.Config{Error: func(error) {}}
+	cfg := &types.Config{
+		Importer: importer.ForCompiler(fset, "gc", nil),
+		Error:    func(error) {},
+	}
 	pkg, _ := cfg.Check(dir, fset, []*ast.File{file}, info)
 
 	p := &cop.Pass{Cop: c, FileSet: fset, File: file, Info: info, Package: pkg}
