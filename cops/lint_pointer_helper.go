@@ -26,7 +26,11 @@ func newPointerHelperFile(opts ...cop.FuncOption) *cop.Func {
 			if p.Info == nil || ast.IsGenerated(p.File) {
 				return
 			}
+			discarded := discardedCalls(p.File)
 			p.ForEachCall(func(call *ast.CallExpr) {
+				if discarded[call] {
+					return
+				}
 				fn, ok := calleeObject(p.Info, call).(*types.Func)
 				if !ok || fn.Pkg() == nil || fn.Pkg().Path() != "github.com/aws/aws-sdk-go-v2/aws" || len(call.Args) != 1 || call.Ellipsis.IsValid() {
 					return
@@ -79,4 +83,27 @@ func newPointerHelperFile(opts ...cop.FuncOption) *cop.Func {
 			})
 		},
 	}, opts...)
+}
+
+// Builtins returning values cannot replace discarded-result function calls.
+func discardedCalls(file *ast.File) map[*ast.CallExpr]bool {
+	calls := make(map[*ast.CallExpr]bool)
+	ast.Inspect(file, func(n ast.Node) bool {
+		var expr ast.Expr
+		switch node := n.(type) {
+		case *ast.ExprStmt:
+			expr = node.X
+		case *ast.DeferStmt:
+			expr = node.Call
+		case *ast.GoStmt:
+			expr = node.Call
+		}
+		if expr != nil {
+			if call, ok := ast.Unparen(expr).(*ast.CallExpr); ok {
+				calls[call] = true
+			}
+		}
+		return true
+	})
+	return calls
 }

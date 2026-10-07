@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/types"
 	"go/version"
+	"slices"
 
 	"github.com/dgageot/rubocop-go/cop"
 )
@@ -30,7 +31,7 @@ func calleeObject(info *types.Info, call *ast.CallExpr) types.Object {
 	if info == nil {
 		return nil
 	}
-	switch fun := call.Fun.(type) {
+	switch fun := ast.Unparen(call.Fun).(type) {
 	case *ast.SelectorExpr:
 		return info.Uses[fun.Sel]
 	case *ast.Ident:
@@ -48,4 +49,41 @@ func forEachConstructionCallExpr(body *ast.BlockStmt, fn func(*ast.CallExpr)) {
 			fn(call)
 		}
 	})
+}
+
+// Resolve package bindings even when an import has only partial type information.
+func standardLibraryCall(p *cop.Pass, call *ast.CallExpr, path string, names ...string) (string, bool) {
+	if fn, ok := calleeObject(p.Info, call).(*types.Func); ok {
+		return fn.Name(), fn.Pkg() != nil && fn.Pkg().Path() == path && fn.Signature().Recv() == nil && slices.Contains(names, fn.Name())
+	}
+	sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+	if !ok || !slices.Contains(names, sel.Sel.Name) {
+		return "", false
+	}
+	id, ok := ast.Unparen(sel.X).(*ast.Ident)
+	if !ok {
+		return "", false
+	}
+	if p.Info != nil {
+		if obj := p.Info.Uses[id]; obj != nil {
+			pkg, ok := obj.(*types.PkgName)
+			return sel.Sel.Name, ok && pkg.Imported().Path() == path
+		}
+	}
+	if id.Obj != nil {
+		return "", false
+	}
+	for _, imp := range p.File.Imports {
+		if cop.ImportPath(imp) != path {
+			continue
+		}
+		name := path
+		if imp.Name != nil {
+			name = imp.Name.Name
+		}
+		if name == id.Name {
+			return sel.Sel.Name, true
+		}
+	}
+	return "", false
 }

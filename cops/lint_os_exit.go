@@ -6,31 +6,34 @@ import (
 	"github.com/dgageot/rubocop-go/cop"
 )
 
-// NewLintOsExit returns a cop that flags os.Exit() calls outside the main
-// function. Calling os.Exit bypasses deferred functions and makes code
-// harder to test.
+// NewLintOsExit flags os.Exit outside the direct body of main.
 func NewLintOsExit() *cop.Func {
 	return cop.New(cop.Meta{
 		Name:        "Lint/OsExit",
 		Description: "Avoid os.Exit outside of main()",
 		Severity:    cop.Warning,
 	}, func(p *cop.Pass) {
-		p.ForEachFunc(func(fn *ast.FuncDecl) {
-			// Allow os.Exit in main()
-			if p.IsMain() && fn.Name.Name == "main" {
-				return
+		for _, decl := range p.File.Decls {
+			mainBody := false
+			if fn, ok := decl.(*ast.FuncDecl); ok {
+				mainBody = p.IsMain() && fn.Recv == nil && fn.Name.Name == "main"
 			}
-
-			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
+			var visit func(ast.Node, bool)
+			visit = func(root ast.Node, allowed bool) {
+				ast.Inspect(root, func(n ast.Node) bool {
+					if lit, ok := n.(*ast.FuncLit); ok {
+						visit(lit.Body, false)
+						return false
+					}
+					if call, ok := n.(*ast.CallExpr); ok && !allowed {
+						if _, match := standardLibraryCall(p, call, "os", "Exit"); match {
+							p.Report(call, "avoid os.Exit outside of main()")
+						}
+					}
 					return true
-				}
-				if cop.IsCallTo(call, "os", "Exit") {
-					p.Report(call, "avoid os.Exit outside of main()")
-				}
-				return true
-			})
-		})
-	})
+				})
+			}
+			visit(decl, mainBody)
+		}
+	}, cop.WithTypes())
 }
