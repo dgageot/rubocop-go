@@ -23,6 +23,8 @@ func ToString(v *string) string { return *v }
 		"pointer.go": `package p
 import sdk "github.com/aws/aws-sdk-go-v2/aws"
 func f(s string) { _ = sdk.String(s); _ = sdk.Int32(1); _ = sdk.Int32(int32(len(s))) }
+func discarded() { sdk.String("x"); defer sdk.String("x"); go sdk.String("x"); for sdk.String("x"); false; sdk.String("x") {} }
+func nested() { defer func(*string){}(sdk.String("x")); go func(*string){}(sdk.String("x")) }
 func allowed(s string) { _ = sdk.StringSlice([]string{s}); _ = sdk.ToString(&s) }
 func shadowed(new int) { _ = sdk.String("x") }
 func shadowedType(int32 int) { _ = sdk.Int32(1) }
@@ -41,7 +43,7 @@ func String(s string) *string { return &s }
 func f() { _ = String("x") }
 `,
 	})
-	require.Len(t, offenses, 4)
+	require.Len(t, offenses, 6)
 	for _, offense := range offenses {
 		assert.Equal(t, "Lint/PointerHelper", offense.CopName)
 		assert.Contains(t, offense.Message, "conversion")
