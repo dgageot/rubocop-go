@@ -79,8 +79,23 @@ type streamFieldAccess struct {
 }
 
 type streamCloseAnalysis struct {
-	pass    *prog.Pass
-	methods map[*types.Func]streamMethod
+	pass        *prog.Pass
+	methods     map[*types.Func]streamMethod
+	graphs      map[*ast.BlockStmt]*cfg.CFG
+	unlocks     map[*types.Func]map[string]bool // Immutable, receiver-relative summaries.
+	uncacheable uint64
+}
+
+func (a *streamCloseAnalysis) graph(body *ast.BlockStmt) *cfg.CFG {
+	if graph := a.graphs[body]; graph != nil {
+		return graph
+	}
+	if a.graphs == nil {
+		a.graphs = make(map[*ast.BlockStmt]*cfg.CFG)
+	}
+	graph := cfg.New(body, func(*ast.CallExpr) bool { return true })
+	a.graphs[body] = graph
+	return graph
 }
 
 func (a *streamCloseAnalysis) check(closeMethod *types.Func) {
@@ -129,9 +144,23 @@ func (a *streamCloseAnalysis) accesses(fn *types.Func, prefix string, locks map[
 		return nil, nil
 	}
 	if visiting[fn] {
-		// Recursive effects are unknown; don't promise inherited locks survive.
+		// Recursive effects depend on inherited locks and cannot be cached.
+		a.uncacheable++
 		return nil, maps.Clone(locks)
 	}
+	if !collect {
+		if summary, cached := a.unlocks[fn]; cached {
+			var unlocked map[string]bool
+			for path := range summary {
+				if unlocked == nil {
+					unlocked = make(map[string]bool)
+				}
+				unlocked[prefix+path] = true
+			}
+			return nil, unlocked
+		}
+	}
+	uncacheable := a.uncacheable
 	visiting[fn] = true
 	defer delete(visiting, fn)
 	scan := streamMethodScan{
@@ -139,6 +168,21 @@ func (a *streamCloseAnalysis) accesses(fn *types.Func, prefix string, locks map[
 		receiver: method.info.ObjectOf(method.fn.Recv.List[0].Names[0]),
 	}
 	scan.body(method.fn.Body, locks, collect)
+	// Recursion depends on inherited locks; callbacks add collect-only call edges.
+	// Cache neither case, nor accesses with their caller-specific lock state.
+	if !collect && a.uncacheable == uncacheable {
+		if a.unlocks == nil {
+			a.unlocks = make(map[*types.Func]map[string]bool)
+		}
+		var summary map[string]bool
+		for path := range scan.unlocked {
+			if summary == nil {
+				summary = make(map[string]bool)
+			}
+			summary[strings.TrimPrefix(path, prefix)] = true
+		}
+		a.unlocks[fn] = summary
+	}
 	return scan.found, scan.unlocked
 }
 
@@ -153,7 +197,7 @@ type streamMethodScan struct {
 }
 
 func (s *streamMethodScan) body(body *ast.BlockStmt, initial map[string]bool, collect bool) {
-	graph := cfg.New(body, func(*ast.CallExpr) bool { return true })
+	graph := s.analysis.graph(body)
 	states := map[*cfg.Block]map[string]bool{graph.Blocks[0]: maps.Clone(initial)}
 	queue := []*cfg.Block{graph.Blocks[0]}
 	for len(queue) > 0 {
@@ -287,6 +331,9 @@ func (s *streamMethodScan) inspect(node ast.Node, locks map[string]bool, collect
 			// Inspect callbacks, but their effects aren't synchronous caller effects.
 			if collect {
 				s.literal(v, locks, true)
+			} else {
+				// A callback can re-enter an ancestor only during access collection.
+				s.analysis.uncacheable++
 			}
 			return false
 		case *ast.AssignStmt:
