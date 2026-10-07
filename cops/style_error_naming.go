@@ -3,6 +3,7 @@ package cops
 import (
 	"go/ast"
 	"go/token"
+	"go/types"
 	"strings"
 
 	"github.com/dgageot/rubocop-go/cop"
@@ -18,6 +19,9 @@ func NewStyleErrorNaming() *cop.Func {
 		Description: "Error variables should be named err or start with err",
 		Severity:    cop.Convention,
 	}, func(p *cop.Pass) {
+		if p.Info == nil {
+			return
+		}
 		p.ForEachAssign(func(assign *ast.AssignStmt) {
 			// Only short variable declarations (:=) returning at least two values
 			// from a function call.
@@ -34,10 +38,15 @@ func NewStyleErrorNaming() *cop.Func {
 				return
 			}
 
-			// The last LHS variable should be "err" or start with "err".
+			// Only enforce naming when the last variable has the built-in error type.
+			typ := p.Info.TypeOf(ident)
+			if typ == nil || !types.Identical(typ, types.Universe.Lookup("error").Type()) {
+				return
+			}
+
 			if !strings.HasPrefix(strings.ToLower(ident.Name), "err") {
 				p.Reportf(ident, "error variable '%s' should be named 'err' or start with 'err'", ident.Name)
 			}
 		})
-	})
+	}, cop.WithTypes())
 }

@@ -49,7 +49,7 @@ func caller() {
 	_ = e
 }
 `
-	offenses := coptest.Run(t, cops.NewStyleErrorNaming(), src)
+	offenses := coptest.RunTyped(t, cops.NewStyleErrorNaming(), src)
 
 	require.Len(t, offenses, 1)
 	assert.Equal(t, "Style/ErrorNaming", offenses[0].CopName)
@@ -66,7 +66,7 @@ func caller() {
 	_ = err
 }
 `
-	offenses := coptest.Run(t, cops.NewStyleErrorNaming(), src)
+	offenses := coptest.RunTyped(t, cops.NewStyleErrorNaming(), src)
 	assert.Empty(t, offenses)
 }
 
