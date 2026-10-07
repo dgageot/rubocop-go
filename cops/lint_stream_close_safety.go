@@ -102,6 +102,18 @@ type streamCloseAnalysis struct {
 	pass     *prog.Pass
 	methods  map[*types.Func]streamMethod
 	reported map[token.Pos]bool
+	graphs   map[*ast.BlockStmt]*cfg.CFG
+	unlocks  map[streamMethodKey]streamLockReleases
+}
+
+type streamMethodKey struct {
+	origin   *types.Func
+	receiver types.Type
+}
+
+type streamLockReleases struct {
+	paths   map[string]bool
+	unknown bool // Recursive summaries cannot promise to preserve inherited locks.
 }
 
 func (a *streamCloseAnalysis) check(t types.Type, pkg *types.Package) {
@@ -210,15 +222,15 @@ type streamMethodScan struct {
 	prefix       string
 	visiting     map[*types.Func]bool
 	found        []streamFieldAccess
-	unordered    map[string]bool
+	unordered    streamLockReleases
 }
 
 func (s *streamMethodScan) body(body *ast.BlockStmt, initial map[string]bool) {
 	// A called body is sequenced separately from its caller's ordinary loads.
 	unordered := s.unordered
-	s.unordered = nil
+	s.unordered = streamLockReleases{}
 	defer func() { s.unordered = unordered }()
-	graph := cfg.New(body, func(*ast.CallExpr) bool { return true })
+	graph := s.analysis.graph(body)
 	states := map[*cfg.Block]map[string]bool{graph.Blocks[0]: maps.Clone(initial)}
 	queue := []*cfg.Block{graph.Blocks[0]}
 	for len(queue) > 0 {
@@ -254,43 +266,87 @@ func (s *streamMethodScan) body(body *ast.BlockStmt, initial map[string]bool) {
 	}
 }
 
-// Helpers may release caller locks, but do not establish must-held acquisitions.
-func (a *streamCloseAnalysis) releasedLocks(fn *types.Func, prefix string, visiting map[*types.Func]bool) map[string]bool {
-	origin := fn.Origin()
-	method, ok := a.methods[origin]
-	if !ok || visiting[origin] {
-		return nil
+func (a *streamCloseAnalysis) graph(body *ast.BlockStmt) *cfg.CFG {
+	if graph := a.graphs[body]; graph != nil {
+		return graph
 	}
-	visiting[origin] = true
-	defer delete(visiting, origin)
-	scan := streamMethodScan{
-		analysis: a, method: method, prefix: prefix,
-		receiver:     method.info.ObjectOf(method.fn.Recv.List[0].Names[0]),
-		receiverType: fn.Signature().Recv().Type(),
+	if a.graphs == nil {
+		a.graphs = make(map[*ast.BlockStmt]*cfg.CFG)
 	}
-	released := make(map[string]bool)
-	scan.releaseCalls(method.fn.Body, released, visiting)
-	for path := range released {
-		if !streamSharedPath(fn.Signature().Recv().Type(), prefix, path, true) {
-			delete(released, path)
-		}
-	}
-	return released
+	graph := cfg.New(body, func(*ast.CallExpr) bool { return true })
+	a.graphs[body] = graph
+	return graph
 }
 
-func (s *streamMethodScan) releaseCalls(node ast.Node, released map[string]bool, visiting map[*types.Func]bool) {
-	if node == nil {
-		return
+// Helpers may release caller locks, but do not establish must-held acquisitions.
+func (a *streamCloseAnalysis) releasedLocks(fn *types.Func, prefix string, visiting map[*types.Func]bool) streamLockReleases {
+	origin := fn.Origin()
+	method, ok := a.methods[origin]
+	if !ok {
+		return streamLockReleases{}
 	}
+	if visiting[origin] {
+		return streamLockReleases{unknown: true}
+	}
+	key := streamMethodKey{origin: origin, receiver: fn.Signature().Recv().Type()}
+	released, cached := a.unlocks[key]
+	if !cached {
+		visiting[origin] = true
+		defer delete(visiting, origin)
+		scan := streamMethodScan{
+			analysis: a, method: method,
+			receiver:     method.info.ObjectOf(method.fn.Recv.List[0].Names[0]),
+			receiverType: key.receiver,
+		}
+		released.paths = make(map[string]bool)
+		released.unknown = !scan.releaseBody(method.fn.Body, released.paths, visiting)
+		for path := range released.paths {
+			if !streamSharedPath(key.receiver, "", path, true) {
+				delete(released.paths, path)
+			}
+		}
+		// A recursive result depends on the active call stack, not just the receiver.
+		if !released.unknown {
+			if a.unlocks == nil {
+				a.unlocks = make(map[streamMethodKey]streamLockReleases)
+			}
+			a.unlocks[key] = released
+		}
+	}
+	paths := make(map[string]bool, len(released.paths))
+	for path := range released.paths {
+		paths[prefix+path] = true
+	}
+	return streamLockReleases{paths: paths, unknown: released.unknown}
+}
+
+func (s *streamMethodScan) releaseBody(body *ast.BlockStmt, released map[string]bool, visiting map[*types.Func]bool) bool {
+	complete := true
+	for _, block := range s.analysis.graph(body).Blocks {
+		if !block.Live {
+			continue
+		}
+		for _, node := range block.Nodes {
+			complete = s.releaseCalls(node, released, visiting) && complete
+		}
+	}
+	return complete
+}
+
+func (s *streamMethodScan) releaseCalls(node ast.Node, released map[string]bool, visiting map[*types.Func]bool) bool {
+	if node == nil {
+		return true
+	}
+	complete := true
 	ast.Inspect(node, func(n ast.Node) bool {
 		switch v := n.(type) {
 		case *ast.FuncLit:
 			return false
 		case *ast.BinaryExpr:
 			if v.Op == token.LAND || v.Op == token.LOR {
-				s.releaseCalls(v.X, released, visiting)
+				complete = s.releaseCalls(v.X, released, visiting) && complete
 				if value, known := s.boolean(v.X); !known || value == (v.Op == token.LAND) {
-					s.releaseCalls(v.Y, released, visiting)
+					complete = s.releaseCalls(v.Y, released, visiting) && complete
 				}
 				return false
 			}
@@ -298,25 +354,28 @@ func (s *streamMethodScan) releaseCalls(node ast.Node, released map[string]bool,
 			if s.unevaluated(v) {
 				return false
 			}
-			s.releaseCalls(v.Fun, released, visiting)
+			complete = s.releaseCalls(v.Fun, released, visiting) && complete
 			for _, arg := range v.Args {
-				s.releaseCalls(arg, released, visiting)
+				complete = s.releaseCalls(arg, released, visiting) && complete
 			}
 			if literal := calledFuncLit(v.Fun); literal != nil {
-				s.releaseCalls(literal.Body, released, visiting)
+				complete = s.releaseBody(literal.Body, released, visiting) && complete
 			} else if fn, path, ok := s.target(v.Fun); ok {
 				if streamMutexType(fn.Signature().Recv().Type()) {
 					if fn.Name() == "Unlock" || fn.Name() == "RUnlock" {
 						released[path] = true
 					}
 				} else {
-					maps.Copy(released, s.analysis.releasedLocks(fn, path, visiting))
+					summary := s.analysis.releasedLocks(fn, path, visiting)
+					maps.Copy(released, summary.paths)
+					complete = !summary.unknown && complete
 				}
 			}
 			return false
 		}
 		return true
 	})
+	return complete
 }
 
 func (s *streamMethodScan) target(expr ast.Expr) (*types.Func, string, bool) {
@@ -430,24 +489,27 @@ func (s *streamMethodScan) evalGroup(addresses, values []ast.Expr, locks map[str
 		}
 		return s.eval(exprs[0], locks, collect)
 	}
-	var releases []map[string]bool
+	var releases []streamLockReleases
 	if collect {
-		releases = make([]map[string]bool, len(exprs))
+		releases = make([]streamLockReleases, len(exprs))
 		for i, expr := range exprs {
-			releases[i] = make(map[string]bool)
-			s.releaseCalls(expr, releases[i], make(map[*types.Func]bool))
+			releases[i].paths = make(map[string]bool)
+			releases[i].unknown = !s.releaseCalls(expr, releases[i].paths, make(map[*types.Func]bool))
 		}
 	}
 	previous := s.unordered
 	for i, expr := range exprs {
 		if collect {
-			s.unordered = maps.Clone(previous)
+			s.unordered = streamLockReleases{paths: maps.Clone(previous.paths), unknown: previous.unknown}
 			for j, released := range releases {
-				if i != j && len(released) > 0 {
-					if s.unordered == nil {
-						s.unordered = make(map[string]bool)
+				if i != j {
+					s.unordered.unknown = s.unordered.unknown || released.unknown
+					if len(released.paths) > 0 {
+						if s.unordered.paths == nil {
+							s.unordered.paths = make(map[string]bool)
+						}
+						maps.Copy(s.unordered.paths, released.paths)
 					}
-					maps.Copy(s.unordered, released)
 				}
 			}
 		}
@@ -462,11 +524,14 @@ func (s *streamMethodScan) evalGroup(addresses, values []ast.Expr, locks map[str
 }
 
 func (s *streamMethodScan) readLocks(locks map[string]bool) map[string]bool {
-	if len(s.unordered) == 0 {
+	if s.unordered.unknown {
+		return nil
+	}
+	if len(s.unordered.paths) == 0 {
 		return locks
 	}
 	locks = maps.Clone(locks)
-	for path := range s.unordered {
+	for path := range s.unordered.paths {
 		delete(locks, path)
 	}
 	return locks
@@ -498,7 +563,9 @@ func (s *streamMethodScan) eval(node ast.Node, locks map[string]bool, collect bo
 		locks = s.call(v.Call, locks, collect, false)
 		// A spawned release can run before the caller's next access.
 		released := make(map[string]bool)
-		s.releaseCalls(v.Call, released, make(map[*types.Func]bool))
+		if !s.releaseCalls(v.Call, released, make(map[*types.Func]bool)) {
+			clear(locks)
+		}
 		for path := range released {
 			delete(locks, path)
 		}
@@ -640,7 +707,7 @@ func (s *streamMethodScan) call(call *ast.CallExpr, locks map[string]bool, colle
 	}
 	// This invocation, including its arguments, precedes later sibling calls.
 	unordered := s.unordered
-	s.unordered = nil
+	s.unordered = streamLockReleases{}
 	defer func() { s.unordered = unordered }()
 	literal := calledFuncLit(call.Fun)
 	fn, path, method := s.target(call.Fun)
@@ -688,14 +755,17 @@ func (s *streamMethodScan) call(call *ast.CallExpr, locks map[string]bool, colle
 			delete(locks, path)
 		}
 	} else {
-		var released map[string]bool
+		var released streamLockReleases
 		if literal != nil {
-			released = make(map[string]bool)
-			s.releaseCalls(literal.Body, released, make(map[*types.Func]bool))
+			released.paths = make(map[string]bool)
+			released.unknown = !s.releaseBody(literal.Body, released.paths, make(map[*types.Func]bool))
 		} else if method {
 			released = s.analysis.releasedLocks(fn, path, make(map[*types.Func]bool))
 		}
-		for path := range released {
+		if released.unknown {
+			clear(locks)
+		}
+		for path := range released.paths {
 			delete(locks, path)
 		}
 	}
