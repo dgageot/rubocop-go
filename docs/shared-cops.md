@@ -27,11 +27,20 @@ The catalog descriptions match each cop's `Meta.Description`.
 | `Lint/BenchmarkLoop` | Consider b.Loop for simple benchmark loops. | 1.24+ |
 | `Lint/SplitTrimJoin` | Use strings.CutLast to remove trailing segments without splitting. | 1.27+ |
 | `Lint/FieldsSeq` | Use strings.FieldsSeq when fields are only iterated once. | 1.24+ |
-| `Lint/CutPrefix` | Use strings.CutPrefix for paired prefix checks and removals. | 1.20+ |
-| `Lint/CutSuffix` | Use strings.CutSuffix for paired suffix checks and removals. | 1.20+ |
+| `Lint/CutPrefix` | Use strings or bytes CutPrefix for paired prefix checks and removals. | 1.20+ |
+| `Lint/CutSuffix` | Use strings or bytes CutSuffix for paired suffix checks and removals. | 1.20+ |
 | `Lint/FieldsSeqLookup` | Use strings.FieldsSeq for first-field and membership lookups. | 1.24+ |
 | `Lint/SlicesClone` | Consider slices.Clone for shallow copies, preserving nilness, types, and capacity contracts. | 1.21+ |
 | `Lint/SortStableFunc` | Use slices.SortStableFunc for simple integer and string comparisons. | 1.21+ |
+| `Lint/ErrorsAsType` | Use errors.AsType for fresh error targets consumed only on success. | 1.26+ |
+| `Lint/MapsCopy` | Use maps.Copy for plain map entry copy loops. | 1.21+ |
+| `Lint/MapsClone` | Use maps.Clone for equivalent nil-safe shallow map copy helpers. | 1.21+ |
+| `Lint/SlicesContains` | Use slices.Contains for simple slice membership helpers. | 1.21+ |
+| `Lint/SlicesEqual` | Use slices.Equal for simple element-wise slice equality helpers. | 1.21+ |
+| `Lint/SplitSeq` | Use strings.SplitSeq or SplitAfterSeq when split results are only iterated once. | 1.24+ |
+| `Lint/SortedMapKeys` | Use slices.Sorted(maps.Keys(m)) for equivalent sorted map key collection. | 1.23+ |
+| `Lint/WaitGroupGo` | Consider WaitGroup.Go for simple Add/go/Done patterns. | 1.25+ |
+| `Lint/HTTPTestRequestWithContext` | Use httptest.NewRequestWithContext for immediate test-request context attachment. | 1.23+ |
 | `Lint/StreamCloseSafety` | Flag potentially unsynchronized field access between Close and Next/Recv. | — |
 
 ## Embedding
@@ -226,3 +235,54 @@ no project-specific directory exclusions are built in.
   comparisons can dereference nil pointers that the original never touched.
   Floating-point keys (NaN ordering), effectful callbacks, tests, and generated
   code are excluded.
+
+- **ErrorsAsType:** fresh `var e *E; if errors.As(err, &e) { ... }` →
+  `if e, ok := errors.AsType[*E](err); ok { ... }`. Target reads must stay in
+  the success branch, without taking its address. Only guaranteed direct matches
+  or concrete leaf errors without custom `As`/`Unwrap` methods are reported:
+  a custom `As` can retain the target pointer, whereas `AsType` returns a copy.
+  Arbitrary interface targets not implementing `error` are excluded. Generic
+  targets require the identical source type parameter: reflection assignability
+  between named and unnamed instantiations is not equivalent to a type assertion.
+  Includes resolved production, internal/external tests, and test-only packages;
+  skips generated files.
+
+- **MapsCopy:** Plain `for k, v := range src { dst[k] = v }` → `maps.Copy(dst, src)`. Only local identifiers and exact key/value types are matched; transformations, filters, extra work, and externally assigned loop variables are excluded. Separate merges keep their original order; nil destinations are not initialized. Selecting MapsClone too can produce overlapping diagnostics. Includes resolved production, internal/external tests,
+  and test-only packages; generated code is excluded.
+
+- **MapsClone:** Exact nil-safe shallow-copy helpers → `maps.Clone(src)`. Requires matching source/result/destination types and an explicit nil-return guard. Deep copies, unconditional allocation, custom capacity hints, and key types that may contain NaNs are excluded. Includes resolved production, internal/external tests,
+  and test-only packages; generated code is excluded.
+
+- **SlicesContains:** Exact boolean slice-membership helpers → `slices.Contains(xs, needle)`. Requires comparable elements and an inert parameter or compatible constant needle. Side effects, field/index/dereference needles, nil-sensitive guards, and incompatible generic argument inference are excluded. Includes resolved production, internal/external tests,
+  and test-only packages; generated code is excluded.
+
+- **SlicesEqual:** Exact length-plus-element equality helpers → `slices.Equal(a, b)`. Preserves comparable-element equality, including NaNs and interface-comparison panics; nil and empty remain equal. Nil-sensitive checks, side effects, arrays, and incompatible named slice types are excluded. Includes resolved production, internal/external tests,
+  and test-only packages; generated code is excluded.
+
+- **SplitSeq:** Direct value-only `range strings.Split(s, sep)` or `SplitAfter` → corresponding Seq API. Requires both iterator syntax and API availability. Preserve input/separator evaluation and empty/trailing fragments. Indexed ranges, retained slices, mutable bytes, and direct recover are excluded. Includes resolved production, internal/external tests,
+  and test-only packages; generated code is excluded.
+
+- **SortedMapKeys:** Adjacent nil-slice declaration, unfiltered key collection, and ascending sort → `slices.Sorted(maps.Keys(src))`. Restricts keys to integers/strings and destinations to unnamed slices. Non-nil empty results, capacity hints, floats, custom ordering, and delayed traversal are excluded. Preserve any downstream capacity contract; exact capacity is not guaranteed by the API. This is a clarity suggestion, not an allocation-performance guarantee. Includes resolved production, internal/external tests,
+  and test-only packages; generated code is excluded.
+
+- **WaitGroupGo:** Adjacent `wg.Add(1); go func() { defer wg.Done(); ... }()` → consider `wg.Go`. Requires exact sync methods, a stable local receiver, no arguments, and the matching defer first. Reassigned or escaping receiver variables, promoted methods, extra group operations, and direct recover are excluded. Advisory only: the callback must not let a panic escape; review captures and completion timing. Includes resolved production, internal/external tests,
+  and test-only packages; generated code is excluded.
+
+- **Byte prefix/suffix cuts:** CutPrefix and CutSuffix also recognize
+  `if bytes.HasPrefix(s, p) { return bytes.TrimPrefix(s, p) }` and suffix
+  equivalents, including matching byte-offset slices. Only simple conditions
+  on local unnamed `[]byte` values and an immediate removal are matched.
+  Preserve nilness, capacity, and backing-array aliasing. Calls, mutations,
+  compound conditions, wrappers, named slices, and full-slice capacity changes
+  are excluded.
+
+- **HTTPTestRequestWithContext:** direct
+  `httptest.NewRequest("GET", "/", nil).WithContext(ctx)` →
+  `httptest.NewRequestWithContext(ctx, "GET", "/", nil)`. Matches constant
+  method/target strings, a nil body, and a local context identifier or inert
+  `context.Background`/`TODO` call. Keep context evaluation and request validation
+  in their original order; verify the supplied context is non-nil. Bodies,
+  effectful context expressions, fields, globals, retained request temporaries,
+  and arbitrary non-contextual requests are excluded. Program-backed and includes
+  test-only/internal/external packages; generated code is excluded. Complements
+  HTTPRequestWithContext without changing its production-only policy.

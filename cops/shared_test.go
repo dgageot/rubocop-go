@@ -30,7 +30,7 @@ func TestSharedCopMetadata(t *testing.T) {
 	programCops := []prog.Cop{
 		NewLintPointerHelper(), NewLintReflectFields(), NewLintStdlibUUID(), NewLintURLClone(),
 		NewLintJSONMarshalWrite(), NewLintBenchmarkLoop(), NewLintSplitTrimJoin(), NewLintFieldsSeq(), NewLintStreamCloseSafety(),
-		NewLintConstructorCommandExec(), NewLintCutPrefix(), NewLintCutSuffix(), NewLintFieldsSeqLookup(), NewLintSlicesClone(), NewLintSortStableFunc(),
+		NewLintMapsCopy(), NewLintMapsClone(), NewLintSlicesContains(), NewLintSlicesEqual(), NewLintSplitSeq(), NewLintSortedMapKeys(), NewLintWaitGroupGo(), NewLintHTTPTestRequestWithContext(), NewLintErrorsAsType(), NewLintConstructorCommandExec(), NewLintCutPrefix(), NewLintCutSuffix(), NewLintFieldsSeqLookup(), NewLintSlicesClone(), NewLintSortStableFunc(),
 	}
 	doc, err := os.ReadFile("../docs/shared-cops.md")
 	require.NoError(t, err)
@@ -50,7 +50,7 @@ func TestSharedCopMetadata(t *testing.T) {
 	for _, c := range programCops {
 		check(c.Name(), c.Description())
 	}
-	assert.Len(t, names, 27)
+	assert.Len(t, names, 36)
 	for _, c := range All() {
 		assert.False(t, names[c.Name()], "shared cops are explicitly selected, not enabled by default")
 	}
@@ -65,6 +65,15 @@ func TestModernizationMinimumVersions(t *testing.T) {
 		name, minimum, filename, src string
 		new                          func(...cop.FuncOption) *cop.Func
 	}{
+		{"maps_copy", "go1.21", "p.go", mapsCopyFixture, newMapsCopyFile},
+		{"maps_clone", "go1.21", "p.go", mapsCloneFixture, newMapsCloneFile},
+		{"slices_contains", "go1.21", "p.go", slicesContainsFixture, newSlicesContainsFile},
+		{"slices_equal", "go1.21", "p.go", slicesEqualFixture, newSlicesEqualFile},
+		{"split_seq", "go1.24", "p.go", splitSeqFixture, newSplitSeqFile},
+		{"sorted_map_keys", "go1.23", "p.go", sortedMapKeysFixture, newSortedMapKeysFile},
+		{"wait_group_go", "go1.25", "p.go", waitGroupGoFixture, newWaitGroupGoFile},
+		{"test request", "go1.23", "p.go", httpTestRequestWithContextFixture, newHTTPTestRequestWithContextFile},
+		{"as type", "go1.26", "p.go", errorsAsTypeFixture, newErrorsAsTypeFile},
 		{"new", "go1.26", "p.go", "package p\nfunc f() *int { n := 1; return &n }", NewLintNewExpr},
 		{"pointer", "go1.26", "p.go", "", newPointerHelperFile},
 		{"reflect", "go1.26", "p.go", reflectFieldsFixture, newReflectFieldsFile},

@@ -19,7 +19,7 @@ func newCutSuffixFile(opts ...cop.FuncOption) *cop.Func {
 	return configuredFileCop(&cop.Func{
 		Meta: cop.Meta{
 			Name:        "Lint/CutSuffix",
-			Description: "Use strings.CutSuffix for paired suffix checks and removals.",
+			Description: "Use strings or bytes CutSuffix for paired suffix checks and removals.",
 			Severity:    cop.Warning,
 		},
 		MinStdlibVersion: "go1.20",
@@ -31,6 +31,7 @@ func newCutSuffixFile(opts ...cop.FuncOption) *cop.Func {
 			ast.Inspect(p.File, func(n ast.Node) bool {
 				switch node := n.(type) {
 				case *ast.IfStmt:
+					checkBytesCutSuffix(p, node)
 					if node.Init == nil && len(node.Body.List) > 0 {
 						checkCutSuffix(p, node.Cond, node.Body.List[0])
 					}
@@ -189,4 +190,30 @@ func (p cutSuffixPattern) removal(expr ast.Expr) bool {
 		}
 	}
 	return p.removal(call.Args[0])
+}
+
+func checkBytesCutSuffix(p *cop.Pass, stmt *ast.IfStmt) {
+	if stmt.Init != nil || stmt.Else != nil || len(stmt.Body.List) == 0 {
+		return
+	}
+	check := cutBytesCall(p.Info, stmt.Cond, "HasSuffix")
+	if check == nil || !cutBytesLocal(p.Info, check.Args[0]) || !cutBytesLocal(p.Info, check.Args[1]) {
+		return
+	}
+	expr := cutBytesValue(stmt.Body.List[0])
+	if trim := cutBytesCall(p.Info, expr, "TrimSuffix"); trim != nil {
+		if !cutBytesSame(p.Info, trim.Args[0], check.Args[0]) || !cutBytesSame(p.Info, trim.Args[1], check.Args[1]) {
+			return
+		}
+	} else {
+		slice, ok := ast.Unparen(expr).(*ast.SliceExpr)
+		if !ok || slice.Slice3 || slice.Low != nil || !cutBytesSame(p.Info, slice.X, check.Args[0]) {
+			return
+		}
+		high, ok := ast.Unparen(slice.High).(*ast.BinaryExpr)
+		if !ok || high.Op != token.SUB || !cutBytesLength(p.Info, high.X, check.Args[0]) || !cutBytesLength(p.Info, high.Y, check.Args[1]) {
+			return
+		}
+	}
+	p.Report(check, "use bytes.CutSuffix instead of bytes.HasSuffix followed by bytes.TrimSuffix or slicing; preserve assignment scope, slice capacity, nilness, and aliasing")
 }
