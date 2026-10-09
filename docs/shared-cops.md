@@ -36,6 +36,7 @@ The catalog descriptions match each cop's `Meta.Description`.
 | `Lint/MapsCopy` | Use maps.Copy for plain map entry copy loops. | 1.21+ |
 | `Lint/MapsClone` | Use maps.Clone for equivalent nil-safe shallow map copy helpers. | 1.21+ |
 | `Lint/SlicesContains` | Use slices.Contains for simple slice membership helpers. | 1.21+ |
+| `Lint/SlicesEqual` | Use slices.Equal for simple element-wise slice equality helpers. | 1.21+ |
 | `Lint/StreamCloseSafety` | Flag potentially unsynchronized field access between Close and Next/Recv. | — |
 
 ## Embedding
@@ -247,4 +248,7 @@ no project-specific directory exclusions are built in.
   and test-only packages; generated code is excluded.
 
 - **SlicesContains:** Exact boolean slice-membership helpers → `slices.Contains(xs, needle)`. Requires comparable elements and an inert parameter or compatible constant needle. Side effects, field/index/dereference needles, nil-sensitive guards, and incompatible generic argument inference are excluded. Includes resolved production, internal/external tests,
+  and test-only packages; generated code is excluded.
+
+- **SlicesEqual:** Exact length-plus-element equality helpers → `slices.Equal(a, b)`. Preserves comparable-element equality, including NaNs and interface-comparison panics; nil and empty remain equal. Nil-sensitive checks, side effects, arrays, and incompatible named slice types are excluded. Includes resolved production, internal/external tests,
   and test-only packages; generated code is excluded.
