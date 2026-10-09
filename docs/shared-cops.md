@@ -37,6 +37,7 @@ The catalog descriptions match each cop's `Meta.Description`.
 | `Lint/MapsClone` | Use maps.Clone for equivalent nil-safe shallow map copy helpers. | 1.21+ |
 | `Lint/SlicesContains` | Use slices.Contains for simple slice membership helpers. | 1.21+ |
 | `Lint/SlicesEqual` | Use slices.Equal for simple element-wise slice equality helpers. | 1.21+ |
+| `Lint/SplitSeq` | Use strings.SplitSeq or SplitAfterSeq when split results are only iterated once. | 1.24+ |
 | `Lint/StreamCloseSafety` | Flag potentially unsynchronized field access between Close and Next/Recv. | — |
 
 ## Embedding
@@ -251,4 +252,7 @@ no project-specific directory exclusions are built in.
   and test-only packages; generated code is excluded.
 
 - **SlicesEqual:** Exact length-plus-element equality helpers → `slices.Equal(a, b)`. Preserves comparable-element equality, including NaNs and interface-comparison panics; nil and empty remain equal. Nil-sensitive checks, side effects, arrays, and incompatible named slice types are excluded. Includes resolved production, internal/external tests,
+  and test-only packages; generated code is excluded.
+
+- **SplitSeq:** Direct value-only `range strings.Split(s, sep)` or `SplitAfter` → corresponding Seq API. Requires both iterator syntax and API availability. Preserve input/separator evaluation and empty/trailing fragments. Indexed ranges, retained slices, mutable bytes, and direct recover are excluded. Includes resolved production, internal/external tests,
   and test-only packages; generated code is excluded.
