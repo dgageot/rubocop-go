@@ -38,6 +38,7 @@ The catalog descriptions match each cop's `Meta.Description`.
 | `Lint/SlicesContains` | Use slices.Contains for simple slice membership helpers. | 1.21+ |
 | `Lint/SlicesEqual` | Use slices.Equal for simple element-wise slice equality helpers. | 1.21+ |
 | `Lint/SplitSeq` | Use strings.SplitSeq or SplitAfterSeq when split results are only iterated once. | 1.24+ |
+| `Lint/SortedMapKeys` | Use slices.Sorted(maps.Keys(m)) for equivalent sorted map key collection. | 1.23+ |
 | `Lint/StreamCloseSafety` | Flag potentially unsynchronized field access between Close and Next/Recv. | — |
 
 ## Embedding
@@ -255,4 +256,7 @@ no project-specific directory exclusions are built in.
   and test-only packages; generated code is excluded.
 
 - **SplitSeq:** Direct value-only `range strings.Split(s, sep)` or `SplitAfter` → corresponding Seq API. Requires both iterator syntax and API availability. Preserve input/separator evaluation and empty/trailing fragments. Indexed ranges, retained slices, mutable bytes, and direct recover are excluded. Includes resolved production, internal/external tests,
+  and test-only packages; generated code is excluded.
+
+- **SortedMapKeys:** Adjacent nil-slice declaration, unfiltered key collection, and ascending sort → `slices.Sorted(maps.Keys(src))`. Restricts keys to integers/strings and destinations to unnamed slices. Non-nil empty results, capacity hints, floats, custom ordering, and delayed traversal are excluded. Preserve any downstream capacity contract; exact capacity is not guaranteed by the API. This is a clarity suggestion, not an allocation-performance guarantee. Includes resolved production, internal/external tests,
   and test-only packages; generated code is excluded.
