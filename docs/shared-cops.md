@@ -27,8 +27,8 @@ The catalog descriptions match each cop's `Meta.Description`.
 | `Lint/BenchmarkLoop` | Consider b.Loop for simple benchmark loops. | 1.24+ |
 | `Lint/SplitTrimJoin` | Use strings.CutLast to remove trailing segments without splitting. | 1.27+ |
 | `Lint/FieldsSeq` | Use strings.FieldsSeq when fields are only iterated once. | 1.24+ |
-| `Lint/CutPrefix` | Use strings.CutPrefix for paired prefix checks and removals. | 1.20+ |
-| `Lint/CutSuffix` | Use strings.CutSuffix for paired suffix checks and removals. | 1.20+ |
+| `Lint/CutPrefix` | Use strings or bytes CutPrefix for paired prefix checks and removals. | 1.20+ |
+| `Lint/CutSuffix` | Use strings or bytes CutSuffix for paired suffix checks and removals. | 1.20+ |
 | `Lint/FieldsSeqLookup` | Use strings.FieldsSeq for first-field and membership lookups. | 1.24+ |
 | `Lint/SlicesClone` | Consider slices.Clone for shallow copies, preserving nilness, types, and capacity contracts. | 1.21+ |
 | `Lint/SortStableFunc` | Use slices.SortStableFunc for simple integer and string comparisons. | 1.21+ |
@@ -264,3 +264,11 @@ no project-specific directory exclusions are built in.
 
 - **WaitGroupGo:** Adjacent `wg.Add(1); go func() { defer wg.Done(); ... }()` → consider `wg.Go`. Requires exact sync methods, a stable local receiver, no arguments, and the matching defer first. Reassigned or escaping receiver variables, promoted methods, extra group operations, and direct recover are excluded. Advisory only: the callback must not let a panic escape; review captures and completion timing. Includes resolved production, internal/external tests,
   and test-only packages; generated code is excluded.
+
+- **Byte prefix/suffix cuts:** CutPrefix and CutSuffix also recognize
+  `if bytes.HasPrefix(s, p) { return bytes.TrimPrefix(s, p) }` and suffix
+  equivalents, including matching byte-offset slices. Only simple conditions
+  on local unnamed `[]byte` values and an immediate removal are matched.
+  Preserve nilness, capacity, and backing-array aliasing. Calls, mutations,
+  compound conditions, wrappers, named slices, and full-slice capacity changes
+  are excluded.

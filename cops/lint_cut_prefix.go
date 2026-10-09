@@ -20,7 +20,7 @@ func newCutPrefixFile(opts ...cop.FuncOption) *cop.Func {
 	return configuredFileCop(&cop.Func{
 		Meta: cop.Meta{
 			Name:        "Lint/CutPrefix",
-			Description: "Use strings.CutPrefix for paired prefix checks and removals.",
+			Description: "Use strings or bytes CutPrefix for paired prefix checks and removals.",
 			Severity:    cop.Warning,
 		},
 		MinStdlibVersion: "go1.20",
@@ -33,6 +33,7 @@ func newCutPrefixFile(opts ...cop.FuncOption) *cop.Func {
 				switch node := n.(type) {
 				case *ast.IfStmt:
 					checkCutPrefix(p, node.Cond, true, node.Body.List)
+					checkBytesCutPrefix(p, node)
 				case *ast.SwitchStmt:
 					if node.Tag == nil {
 						fallthroughCase := false
@@ -303,4 +304,88 @@ func cutPrefixStringsCall(info *types.Info, expr ast.Expr, name string) *ast.Cal
 		return nil
 	}
 	return call
+}
+
+func checkBytesCutPrefix(p *cop.Pass, stmt *ast.IfStmt) {
+	if stmt.Init != nil || stmt.Else != nil || len(stmt.Body.List) == 0 {
+		return
+	}
+	check := cutBytesCall(p.Info, stmt.Cond, "HasPrefix")
+	if check == nil || !cutBytesLocal(p.Info, check.Args[0]) || !cutBytesLocal(p.Info, check.Args[1]) {
+		return
+	}
+	expr := cutBytesValue(stmt.Body.List[0])
+	if trim := cutBytesCall(p.Info, expr, "TrimPrefix"); trim != nil {
+		if !cutBytesSame(p.Info, trim.Args[0], check.Args[0]) || !cutBytesSame(p.Info, trim.Args[1], check.Args[1]) {
+			return
+		}
+	} else {
+		slice, ok := ast.Unparen(expr).(*ast.SliceExpr)
+		if !ok || slice.Slice3 || slice.High != nil || !cutBytesSame(p.Info, slice.X, check.Args[0]) || !cutBytesLength(p.Info, slice.Low, check.Args[1]) {
+			return
+		}
+	}
+	p.Report(check, "use bytes.CutPrefix instead of bytes.HasPrefix followed by bytes.TrimPrefix or slicing; preserve assignment scope, slice capacity, nilness, and aliasing")
+}
+
+func cutBytesCall(info *types.Info, expr ast.Expr, name string) *ast.CallExpr {
+	call, ok := ast.Unparen(expr).(*ast.CallExpr)
+	if !ok || len(call.Args) != 2 || call.Ellipsis.IsValid() {
+		return nil
+	}
+	fn, ok := calleeObject(info, call).(*types.Func)
+	if !ok || fn.Pkg() == nil || fn.Pkg().Path() != "bytes" || fn.Name() != name || fn.Type().(*types.Signature).Recv() != nil {
+		return nil
+	}
+	return call
+}
+
+// Named slices change the result type; aliases to []byte do not.
+func cutBytesLocal(info *types.Info, expr ast.Expr) bool {
+	id, ok := ast.Unparen(expr).(*ast.Ident)
+	if !ok {
+		return false
+	}
+	variable, ok := info.Uses[id].(*types.Var)
+	if !ok || variable.Parent() == nil || variable.Pkg() == nil || variable.Parent() == variable.Pkg().Scope() {
+		return false
+	}
+	slice, ok := types.Unalias(variable.Type()).(*types.Slice)
+	return ok && types.Identical(slice.Elem(), types.Typ[types.Byte])
+}
+
+func cutBytesSame(info *types.Info, a, b ast.Expr) bool {
+	aid, aok := ast.Unparen(a).(*ast.Ident)
+	bid, bok := ast.Unparen(b).(*ast.Ident)
+	return aok && bok && info.Uses[aid] != nil && info.Uses[aid] == info.Uses[bid]
+}
+
+func cutBytesLength(info *types.Info, expr, value ast.Expr) bool {
+	call, ok := ast.Unparen(expr).(*ast.CallExpr)
+	return ok && len(call.Args) == 1 && !call.Ellipsis.IsValid() && calleeObject(info, call) == types.Universe.Lookup("len") && cutBytesSame(info, call.Args[0], value)
+}
+
+// Consume only a direct removal, before any calls or mutable-alias writes.
+func cutBytesValue(stmt ast.Stmt) ast.Expr {
+	switch stmt := stmt.(type) {
+	case *ast.AssignStmt:
+		if (stmt.Tok == token.DEFINE || stmt.Tok == token.ASSIGN) && len(stmt.Lhs) == 1 && len(stmt.Rhs) == 1 {
+			if id, ok := stmt.Lhs[0].(*ast.Ident); ok && id.Name != "_" {
+				return stmt.Rhs[0]
+			}
+		}
+	case *ast.DeclStmt:
+		decl, ok := stmt.Decl.(*ast.GenDecl)
+		if ok && decl.Tok == token.VAR && len(decl.Specs) == 1 {
+			value, ok := decl.Specs[0].(*ast.ValueSpec)
+			if ok && len(value.Names) == 1 && value.Names[0].Name != "_" && len(value.Values) == 1 {
+				return value.Values[0]
+			}
+		}
+	case *ast.ReturnStmt:
+		if len(stmt.Results) == 1 {
+			return stmt.Results[0]
+		}
+	}
+	return nil
 }
