@@ -34,6 +34,7 @@ The catalog descriptions match each cop's `Meta.Description`.
 | `Lint/SortStableFunc` | Use slices.SortStableFunc for simple integer and string comparisons. | 1.21+ |
 | `Lint/ErrorsAsType` | Use errors.AsType for fresh error targets consumed only on success. | 1.26+ |
 | `Lint/MapsCopy` | Use maps.Copy for plain map entry copy loops. | 1.21+ |
+| `Lint/MapsClone` | Use maps.Clone for equivalent nil-safe shallow map copy helpers. | 1.21+ |
 | `Lint/StreamCloseSafety` | Flag potentially unsynchronized field access between Close and Next/Recv. | — |
 
 ## Embedding
@@ -239,4 +240,7 @@ no project-specific directory exclusions are built in.
   generated files.
 
 - **MapsCopy:** Plain `for k, v := range src { dst[k] = v }` → `maps.Copy(dst, src)`. Only local identifiers and exact key/value types are matched; transformations, filters, extra work, and externally assigned loop variables are excluded. Separate merges keep their original order; nil destinations are not initialized. Selecting MapsClone too can produce overlapping diagnostics. Includes resolved production, internal/external tests,
+  and test-only packages; generated code is excluded.
+
+- **MapsClone:** Exact nil-safe shallow-copy helpers → `maps.Clone(src)`. Requires matching source/result/destination types and an explicit nil-return guard. Deep copies, unconditional allocation, custom capacity hints, and key types that may contain NaNs are excluded. Includes resolved production, internal/external tests,
   and test-only packages; generated code is excluded.
