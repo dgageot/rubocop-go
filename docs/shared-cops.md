@@ -39,6 +39,7 @@ The catalog descriptions match each cop's `Meta.Description`.
 | `Lint/SlicesEqual` | Use slices.Equal for simple element-wise slice equality helpers. | 1.21+ |
 | `Lint/SplitSeq` | Use strings.SplitSeq or SplitAfterSeq when split results are only iterated once. | 1.24+ |
 | `Lint/SortedMapKeys` | Use slices.Sorted(maps.Keys(m)) for equivalent sorted map key collection. | 1.23+ |
+| `Lint/WaitGroupGo` | Consider WaitGroup.Go for simple Add/go/Done patterns. | 1.25+ |
 | `Lint/StreamCloseSafety` | Flag potentially unsynchronized field access between Close and Next/Recv. | — |
 
 ## Embedding
@@ -259,4 +260,7 @@ no project-specific directory exclusions are built in.
   and test-only packages; generated code is excluded.
 
 - **SortedMapKeys:** Adjacent nil-slice declaration, unfiltered key collection, and ascending sort → `slices.Sorted(maps.Keys(src))`. Restricts keys to integers/strings and destinations to unnamed slices. Non-nil empty results, capacity hints, floats, custom ordering, and delayed traversal are excluded. Preserve any downstream capacity contract; exact capacity is not guaranteed by the API. This is a clarity suggestion, not an allocation-performance guarantee. Includes resolved production, internal/external tests,
+  and test-only packages; generated code is excluded.
+
+- **WaitGroupGo:** Adjacent `wg.Add(1); go func() { defer wg.Done(); ... }()` → consider `wg.Go`. Requires exact sync methods, a stable local receiver, no arguments, and the matching defer first. Reassigned or escaping receiver variables, promoted methods, extra group operations, and direct recover are excluded. Advisory only: the callback must not let a panic escape; review captures and completion timing. Includes resolved production, internal/external tests,
   and test-only packages; generated code is excluded.
