@@ -40,6 +40,7 @@ The catalog descriptions match each cop's `Meta.Description`.
 | `Lint/SplitSeq` | Use strings.SplitSeq or SplitAfterSeq when split results are only iterated once. | 1.24+ |
 | `Lint/SortedMapKeys` | Use slices.Sorted(maps.Keys(m)) for equivalent sorted map key collection. | 1.23+ |
 | `Lint/WaitGroupGo` | Consider WaitGroup.Go for simple Add/go/Done patterns. | 1.25+ |
+| `Lint/HTTPTestRequestWithContext` | Use httptest.NewRequestWithContext for immediate test-request context attachment. | 1.23+ |
 | `Lint/StreamCloseSafety` | Flag potentially unsynchronized field access between Close and Next/Recv. | — |
 
 ## Embedding
@@ -272,3 +273,14 @@ no project-specific directory exclusions are built in.
   Preserve nilness, capacity, and backing-array aliasing. Calls, mutations,
   compound conditions, wrappers, named slices, and full-slice capacity changes
   are excluded.
+
+- **HTTPTestRequestWithContext:** direct
+  `httptest.NewRequest("GET", "/", nil).WithContext(ctx)` →
+  `httptest.NewRequestWithContext(ctx, "GET", "/", nil)`. Matches constant
+  method/target strings, a nil body, and a local context identifier or inert
+  `context.Background`/`TODO` call. Keep context evaluation and request validation
+  in their original order; verify the supplied context is non-nil. Bodies,
+  effectful context expressions, fields, globals, retained request temporaries,
+  and arbitrary non-contextual requests are excluded. Program-backed and includes
+  test-only/internal/external packages; generated code is excluded. Complements
+  HTTPRequestWithContext without changing its production-only policy.
