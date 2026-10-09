@@ -35,6 +35,7 @@ The catalog descriptions match each cop's `Meta.Description`.
 | `Lint/ErrorsAsType` | Use errors.AsType for fresh error targets consumed only on success. | 1.26+ |
 | `Lint/MapsCopy` | Use maps.Copy for plain map entry copy loops. | 1.21+ |
 | `Lint/MapsClone` | Use maps.Clone for equivalent nil-safe shallow map copy helpers. | 1.21+ |
+| `Lint/SlicesContains` | Use slices.Contains for simple slice membership helpers. | 1.21+ |
 | `Lint/StreamCloseSafety` | Flag potentially unsynchronized field access between Close and Next/Recv. | — |
 
 ## Embedding
@@ -243,4 +244,7 @@ no project-specific directory exclusions are built in.
   and test-only packages; generated code is excluded.
 
 - **MapsClone:** Exact nil-safe shallow-copy helpers → `maps.Clone(src)`. Requires matching source/result/destination types and an explicit nil-return guard. Deep copies, unconditional allocation, custom capacity hints, and key types that may contain NaNs are excluded. Includes resolved production, internal/external tests,
+  and test-only packages; generated code is excluded.
+
+- **SlicesContains:** Exact boolean slice-membership helpers → `slices.Contains(xs, needle)`. Requires comparable elements and an inert parameter or compatible constant needle. Side effects, field/index/dereference needles, nil-sensitive guards, and incompatible generic argument inference are excluded. Includes resolved production, internal/external tests,
   and test-only packages; generated code is excluded.

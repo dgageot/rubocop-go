@@ -30,7 +30,7 @@ func TestSharedCopMetadata(t *testing.T) {
 	programCops := []prog.Cop{
 		NewLintPointerHelper(), NewLintReflectFields(), NewLintStdlibUUID(), NewLintURLClone(),
 		NewLintJSONMarshalWrite(), NewLintBenchmarkLoop(), NewLintSplitTrimJoin(), NewLintFieldsSeq(), NewLintStreamCloseSafety(),
-		NewLintMapsCopy(), NewLintMapsClone(), NewLintErrorsAsType(), NewLintConstructorCommandExec(), NewLintCutPrefix(), NewLintCutSuffix(), NewLintFieldsSeqLookup(), NewLintSlicesClone(), NewLintSortStableFunc(),
+		NewLintMapsCopy(), NewLintMapsClone(), NewLintSlicesContains(), NewLintErrorsAsType(), NewLintConstructorCommandExec(), NewLintCutPrefix(), NewLintCutSuffix(), NewLintFieldsSeqLookup(), NewLintSlicesClone(), NewLintSortStableFunc(),
 	}
 	doc, err := os.ReadFile("../docs/shared-cops.md")
 	require.NoError(t, err)
@@ -50,7 +50,7 @@ func TestSharedCopMetadata(t *testing.T) {
 	for _, c := range programCops {
 		check(c.Name(), c.Description())
 	}
-	assert.Len(t, names, 30)
+	assert.Len(t, names, 31)
 	for _, c := range All() {
 		assert.False(t, names[c.Name()], "shared cops are explicitly selected, not enabled by default")
 	}
@@ -67,6 +67,7 @@ func TestModernizationMinimumVersions(t *testing.T) {
 	}{
 		{"maps_copy", "go1.21", "p.go", mapsCopyFixture, newMapsCopyFile},
 		{"maps_clone", "go1.21", "p.go", mapsCloneFixture, newMapsCloneFile},
+		{"slices_contains", "go1.21", "p.go", slicesContainsFixture, newSlicesContainsFile},
 		{"as type", "go1.26", "p.go", errorsAsTypeFixture, newErrorsAsTypeFile},
 		{"new", "go1.26", "p.go", "package p\nfunc f() *int { n := 1; return &n }", NewLintNewExpr},
 		{"pointer", "go1.26", "p.go", "", newPointerHelperFile},
