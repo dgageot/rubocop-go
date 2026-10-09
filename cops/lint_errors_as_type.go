@@ -111,12 +111,16 @@ func errorsAsTypeNoCustomAs(info *types.Info, source ast.Expr, target types.Type
 	if typ == nil {
 		return false
 	}
+	// A type parameter can admit named and unnamed instantiations that As
+	// assigns between, but AsType cannot match with a type assertion.
+	if _, ok := types.Unalias(target).(*types.TypeParam); ok {
+		return types.Identical(typ, target)
+	}
 	if types.AssignableTo(typ, target) {
 		_, interfaceTarget := target.Underlying().(*types.Interface)
-		_, parameterTarget := types.Unalias(target).(*types.TypeParam)
 		// As uses reflection assignability; a non-interface type assertion needs
 		// an identical dynamic type, not just an identical underlying type.
-		return types.Identical(typ, target) || (interfaceTarget && !parameterTarget)
+		return types.Identical(typ, target) || interfaceTarget
 	}
 	if _, ok := typ.Underlying().(*types.Interface); ok {
 		return false

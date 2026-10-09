@@ -241,9 +241,11 @@ no project-specific directory exclusions are built in.
   the success branch, without taking its address. Only guaranteed direct matches
   or concrete leaf errors without custom `As`/`Unwrap` methods are reported:
   a custom `As` can retain the target pointer, whereas `AsType` returns a copy.
-  Arbitrary interface targets not implementing `error` are excluded. Includes
-  resolved production, internal/external tests, and test-only packages; skips
-  generated files.
+  Arbitrary interface targets not implementing `error` are excluded. Generic
+  targets require the identical source type parameter: reflection assignability
+  between named and unnamed instantiations is not equivalent to a type assertion.
+  Includes resolved production, internal/external tests, and test-only packages;
+  skips generated files.
 
 - **MapsCopy:** Plain `for k, v := range src { dst[k] = v }` → `maps.Copy(dst, src)`. Only local identifiers and exact key/value types are matched; transformations, filters, extra work, and externally assigned loop variables are excluded. Separate merges keep their original order; nil destinations are not initialized. Selecting MapsClone too can produce overlapping diagnostics. Includes resolved production, internal/external tests,
   and test-only packages; generated code is excluded.

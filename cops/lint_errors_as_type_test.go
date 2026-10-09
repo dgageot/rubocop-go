@@ -88,6 +88,7 @@ func TestErrorsAsTypeSourceRestrictions(t *testing.T) {
 		{"alias target", "*E", "Alias", `type Alias = *E`, 1},
 		{"assignable anonymous value", "struct{ error }", "Named", `type Named struct{ error }`, 0},
 		{"generic same underlying type", "T", "Named", `type Named struct{ error }`, 0},
+		{"concrete named source generic target", "Named", "T", `type Named struct{ error }`, 0},
 		{"generic target same underlying type", "struct{ error }", "T", "", 0},
 		{"value target", "Value", "Value", `type Value struct{}; func (Value) Error() string { return "value" }`, 1},
 		{"pointer to interface target", "error", "*error", "", 0},
@@ -99,7 +100,7 @@ func TestErrorsAsTypeSourceRestrictions(t *testing.T) {
 			src = strings.Replace(src, "var e *E", "var e "+tc.target, 1)
 			if tc.source == "T" || tc.target == "T" {
 				constraint := "error"
-				if tc.target == "Named" || tc.source == "struct{ error }" {
+				if tc.target == "Named" || tc.source == "Named" || tc.source == "struct{ error }" {
 					constraint = "interface{ error; ~struct{ error } }"
 				}
 				src = strings.Replace(src, "func f(", "func f[T "+constraint+"](", 1)
@@ -150,6 +151,28 @@ func TestErrorsAsTypeAssignableDifferentDynamicType(t *testing.T) {
 
 	_, ok := errors.AsType[named](source)
 	assert.False(t, ok, "type assertions require identical non-interface dynamic types")
+}
+
+type errorsAsTypeNamedError struct{ error }
+
+func errorsAsTypeGenericTarget[T interface {
+	error
+	~struct{ error }
+}](t *testing.T, source errorsAsTypeNamedError) T {
+	t.Helper()
+	var target T
+	require.ErrorAs(t, source, &target)
+	return target
+}
+
+func TestErrorsAsTypeGenericTargetAssignability(t *testing.T) {
+	t.Parallel()
+	source := errorsAsTypeNamedError{errors.New("source")}
+	original := errorsAsTypeGenericTarget[struct{ error }](t, source)
+	assert.Same(t, source.error, original.error)
+
+	_, ok := errors.AsType[struct{ error }](source)
+	assert.False(t, ok, "a generic target can be assignable without matching the dynamic type")
 }
 
 func TestErrorsAsTypeProgram(t *testing.T) {
