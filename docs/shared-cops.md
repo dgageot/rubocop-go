@@ -32,6 +32,7 @@ The catalog descriptions match each cop's `Meta.Description`.
 | `Lint/FieldsSeqLookup` | Use strings.FieldsSeq for first-field and membership lookups. | 1.24+ |
 | `Lint/SlicesClone` | Consider slices.Clone for shallow copies, preserving nilness, types, and capacity contracts. | 1.21+ |
 | `Lint/SortStableFunc` | Use slices.SortStableFunc for simple integer and string comparisons. | 1.21+ |
+| `Lint/ErrorsAsType` | Use errors.AsType for fresh error targets consumed only on success. | 1.26+ |
 | `Lint/StreamCloseSafety` | Flag potentially unsynchronized field access between Close and Next/Recv. | — |
 
 ## Embedding
@@ -226,3 +227,12 @@ no project-specific directory exclusions are built in.
   comparisons can dereference nil pointers that the original never touched.
   Floating-point keys (NaN ordering), effectful callbacks, tests, and generated
   code are excluded.
+
+- **ErrorsAsType:** fresh `var e *E; if errors.As(err, &e) { ... }` →
+  `if e, ok := errors.AsType[*E](err); ok { ... }`. Target reads must stay in
+  the success branch, without taking its address. Only guaranteed direct matches
+  or concrete leaf errors without custom `As`/`Unwrap` methods are reported:
+  a custom `As` can retain the target pointer, whereas `AsType` returns a copy.
+  Arbitrary interface targets not implementing `error` are excluded. Includes
+  resolved production, internal/external tests, and test-only packages; skips
+  generated files.
