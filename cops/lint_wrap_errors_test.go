@@ -86,3 +86,15 @@ func f(err error) error { return fmt.Errorf("oops: ` + format + `", err) }
 		assert.Empty(t, coptest.RunTyped(t, NewLintWrapErrors(), src), format)
 	}
 }
+
+func TestWrapErrorsBuiltinAlias(t *testing.T) {
+	t.Parallel()
+	for _, declaration := range []string{"type Error = error", "type First = error; type Error = First"} {
+		src := `package p
+import "fmt"
+` + declaration + `
+func f(err Error) error { return fmt.Errorf("oops: %v", err) }
+`
+		require.Len(t, coptest.RunTyped(t, NewLintWrapErrors(), src), 1)
+	}
+}

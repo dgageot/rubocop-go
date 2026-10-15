@@ -221,3 +221,84 @@ func streamCloseTestPass(t *testing.T, sources ...string) *prog.Pass {
 		Fset: fset, Packages: []*packages.Package{{Types: pkg, TypesInfo: info, Syntax: files}},
 	}}
 }
+
+func TestStreamCloseSafetyClosureLocks(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, body string
+		want       int
+	}{
+		{"stored closure invoked after unlock", `s.mu.Lock(); read := func() bool { return s.done }; s.mu.Unlock(); return read()`, 1},
+		{"escaping callback", `s.mu.Lock(); defer s.mu.Unlock(); save(func() bool { return s.done }); return true`, 1},
+		{"immediate closure inherits lock", `s.mu.Lock(); defer s.mu.Unlock(); return (func() bool { return s.done })()`, 0},
+		{"immediate closure releases lock", `s.mu.Lock(); func() { s.mu.Unlock() }(); return s.done`, 1},
+		{"immediate closure defers release", `s.mu.Lock(); func() { defer s.mu.Unlock() }(); return s.done`, 1},
+		{"nested immediate closure releases lock", `s.mu.Lock(); func() { func() { s.mu.Unlock() }() }(); return s.done`, 1},
+		{"conditional release invalidates lock", `s.mu.Lock(); func() { if s.done { s.mu.Unlock() } }(); return s.done`, 1},
+		{"read-only immediate closure preserves lock", `s.mu.Lock(); defer s.mu.Unlock(); func() { _ = s.done }(); return s.done`, 0},
+		{"closure acquires own lock", `read := func() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.done }; return read()`, 0},
+		{"goroutine does not inherit lock", `s.mu.Lock(); defer s.mu.Unlock(); go func() { _ = s.done }(); return true`, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := streamCloseTestPass(t, `package p
+import "sync"
+type stream struct { mu sync.Mutex; done bool }
+func save(func() bool) {}
+func (s *stream) Next() bool { `+tc.body+` }
+func (s *stream) Close() { s.mu.Lock(); defer s.mu.Unlock(); s.done = true }
+`)
+			NewLintStreamCloseSafety().Check(p)
+			assert.Len(t, p.Offenses(), tc.want, "%+v", p.Offenses())
+		})
+	}
+}
+
+func TestStreamCloseSafetyValueReceivers(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, src string
+		want      int
+	}{
+		{"scalar write is copied", `type stream struct { done bool }
+func (s *stream) Next() bool { return s.done }
+func (s stream) Close() { s.done = true }`, 0},
+		{"nested value write is copied", `type state struct { done bool }; type stream struct { state state }
+func (s *stream) Next() bool { return s.state.done }
+func (s stream) Close() { s.state.done = true }`, 0},
+		{"pointer field slot is copied", `type state struct { done bool }; type stream struct { state *state }
+func (s *stream) Next() bool { return s.state.done }
+func (s stream) Close() { s.state = nil }`, 0},
+		{"pointee remains shared", `type state struct { done bool }; type stream struct { state *state }
+func (s *stream) Next() bool { return s.state.done }
+func (s stream) Close() { s.state.done = true }`, 1},
+		{"promoted pointee remains shared", `type state struct { done bool }; type stream struct { *state }
+func (s *stream) Next() bool { return s.done }
+func (s stream) Close() { s.done = true }`, 1},
+		{"pointer helper operates on copy", `type stream struct { done bool }
+func (s *stream) Next() bool { return s.done }
+func (s *stream) set() { s.done = true }
+func (s stream) Close() { s.set() }`, 0},
+		{"helper pointee remains shared", `type state struct { done bool }; type stream struct { state *state }
+func (s *stream) Next() bool { return s.state.done }
+func (s *state) set() { s.done = true }
+func (s stream) Close() { s.state.set() }`, 1},
+		{"copied mutex does not protect pointee", `type state struct { done bool }; type stream struct { mu sync.Mutex; state *state }
+func (s *stream) Next() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.state.done }
+func (s stream) Close() { s.mu.Lock(); defer s.mu.Unlock(); s.state.done = true }`, 1},
+		{"pointer mutex protects pointee", `type state struct { done bool }; type stream struct { mu *sync.Mutex; state *state }
+func (s *stream) Next() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.state.done }
+func (s stream) Close() { s.mu.Lock(); defer s.mu.Unlock(); s.state.done = true }`, 0},
+		{"nested shared mutex", `type state struct { mu sync.Mutex; done bool }; type stream struct { state *state }
+func (s *stream) Next() bool { s.state.mu.Lock(); defer s.state.mu.Unlock(); return s.state.done }
+func (s stream) Close() { s.state.mu.Lock(); defer s.state.mu.Unlock(); s.state.done = true }`, 0},
+		{"value reader writes its own copy", `type stream struct { done bool }
+func (s stream) Next() bool { s.done = true; return true }
+func (s *stream) Close() { _ = s.done }`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := streamCloseTestPass(t, "package p\nimport \"sync\"\nvar _ sync.Mutex\n"+tc.src)
+			NewLintStreamCloseSafety().Check(p)
+			assert.Len(t, p.Offenses(), tc.want, "%+v", p.Offenses())
+		})
+	}
+}

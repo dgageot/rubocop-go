@@ -1,6 +1,9 @@
 package cop
 
-import "go/ast"
+import (
+	"go/ast"
+	"go/token"
+)
 
 // IsContextType reports whether expr is the syntactic type context.Context.
 //
@@ -42,7 +45,7 @@ func SignatureHasContext(typ *ast.FuncType) bool {
 			if !IsContextType(f.Type) {
 				continue
 			}
-			if len(f.Names) == 0 {
+			if len(f.Names) == 0 && fl == typ.Params {
 				return true
 			}
 			for _, n := range f.Names {
@@ -81,40 +84,152 @@ func BodyDeclaresContext(body *ast.BlockStmt) bool {
 	return found
 }
 
-// WalkFuncWithContextScope walks body invoking visit at every AST node,
-// with hasContext=true when a context.Context is syntactically reachable
-// from the enclosing function. The walk recurses into nested function
-// literals, propagating the outer context-visibility (closures capture by
-// name, so a nested literal sees the parent's ctx).
+// WalkFuncWithContextScope walks body with the standard ast.Inspect visit
+// contract. hasContext reports whether a syntactically recognized context
+// binding is visible at that node, respecting declaration order, block scopes,
+// shadowing, and closure captures. Like IsContextType, this is not type analysis.
 //
-// outerHasContext seeds the recursion; pass false at the top level. visit
-// receives the standard ast.Inspect contract: return false to stop
-// descending into the current subtree.
-//
-// Use it for context-aware rules — "prefer the *Context variant" being the
-// archetype:
-//
-//	p.ForEachFunc(func(fn *ast.FuncDecl) {
-//	    if fn.Body == nil { return }
-//	    cop.WalkFuncWithContextScope(fn.Type, fn.Body, false,
-//	        func(n ast.Node, hasContext bool) bool {
-//	            if !hasContext { return true }
-//	            // ... inspect call expressions ...
-//	            return true
-//	        })
-//	})
+// outerHasContext represents a context supplied by a caller outside this walk.
+// Its name is unknown, so local declarations cannot shadow that seed.
 func WalkFuncWithContextScope(typ *ast.FuncType, body *ast.BlockStmt, outerHasContext bool, visit func(n ast.Node, hasContext bool) bool) {
 	if body == nil {
 		return
 	}
-	hasContext := outerHasContext || SignatureHasContext(typ) || BodyDeclaresContext(body)
-	ast.Inspect(body, func(n ast.Node) bool {
-		if fl, ok := n.(*ast.FuncLit); ok {
-			WalkFuncWithContextScope(fl.Type, fl.Body, hasContext, visit)
-			return false
+	scope := &contextScope{anonymous: outerHasContext}
+	scope.signature(typ)
+	ast.Walk(&contextVisitor{scope: scope, visit: visit}, body)
+}
+
+type contextScope struct {
+	parent    *contextScope
+	names     map[string]bool
+	anonymous bool
+}
+
+func (s *contextScope) bind(name string, context bool) {
+	if name == "" || name == "_" {
+		return
+	}
+	if s.names == nil {
+		s.names = make(map[string]bool)
+	}
+	s.names[name] = context
+}
+
+func (s *contextScope) hasContext() bool {
+	seen := make(map[string]bool)
+	for ; s != nil; s = s.parent {
+		if s.anonymous {
+			return true
 		}
-		return visit(n, hasContext)
-	})
+		for name, context := range s.names {
+			if !seen[name] && context {
+				return true
+			}
+			seen[name] = true
+		}
+	}
+	return false
+}
+
+func (s *contextScope) signature(typ *ast.FuncType) {
+	if typ == nil {
+		return
+	}
+	for _, fields := range []*ast.FieldList{typ.Params, typ.Results} {
+		if fields == nil {
+			continue
+		}
+		for _, field := range fields.List {
+			context := IsContextType(field.Type)
+			if len(field.Names) == 0 && context && fields == typ.Params {
+				s.anonymous = true
+			}
+			for _, name := range field.Names {
+				s.bind(name.Name, context)
+			}
+		}
+	}
+}
+
+type contextVisitor struct {
+	node, parent ast.Node
+	scope        *contextScope
+	visit        func(ast.Node, bool) bool
+}
+
+func (v *contextVisitor) Visit(n ast.Node) ast.Visitor {
+	if n == nil {
+		v.bindDeclaration()
+		if v.visit != nil {
+			v.visit(nil, v.scope.hasContext())
+		}
+		return nil
+	}
+	child := &contextVisitor{node: n, parent: v.node, scope: v.scope, visit: v.visit}
+	switch n := n.(type) {
+	case *ast.FuncLit:
+		child.scope = &contextScope{parent: v.scope}
+		child.scope.signature(n.Type)
+	case *ast.BlockStmt:
+		// Parameters and the function body share a scope for := redeclarations.
+		_, functionBody := v.node.(*ast.FuncLit)
+		if v.node != nil && !functionBody {
+			child.scope = &contextScope{parent: v.scope}
+		}
+		if loop, ok := v.node.(*ast.RangeStmt); ok && loop.Tok == token.DEFINE {
+			for _, expr := range []ast.Expr{loop.Key, loop.Value} {
+				if id, ok := expr.(*ast.Ident); ok {
+					v.scope.bind(id.Name, false)
+				}
+			}
+		}
+	case *ast.IfStmt, *ast.ForStmt, *ast.RangeStmt, *ast.SwitchStmt, *ast.TypeSwitchStmt, *ast.SelectStmt, *ast.CommClause:
+		child.scope = &contextScope{parent: v.scope}
+	case *ast.CaseClause:
+		child.scope = &contextScope{parent: v.scope}
+		if sw, ok := v.parent.(*ast.TypeSwitchStmt); ok {
+			if assign, ok := sw.Assign.(*ast.AssignStmt); ok && assign.Tok == token.DEFINE {
+				if id, ok := assign.Lhs[0].(*ast.Ident); ok {
+					child.scope.bind(id.Name, len(n.List) == 1 && IsContextType(n.List[0]))
+				}
+			}
+		}
+	case *ast.TypeSpec:
+		child.scope.bind(n.Name.Name, false)
+	}
+	if child.visit != nil && !child.visit(n, child.scope.hasContext()) {
+		// Still track declarations in pruned subtrees for subsequent siblings.
+		child.visit = nil
+	}
+	return child
+}
+
+func (v *contextVisitor) bindDeclaration() {
+	switch n := v.node.(type) {
+	case *ast.AssignStmt:
+		if n.Tok != token.DEFINE {
+			return
+		}
+		for i, expr := range n.Lhs {
+			if id, ok := expr.(*ast.Ident); ok {
+				if _, exists := v.scope.names[id.Name]; !exists {
+					v.scope.bind(id.Name, contextInitializer(i, n.Rhs))
+				}
+			}
+		}
+	case *ast.ValueSpec:
+		for i, name := range n.Names {
+			v.scope.bind(name.Name, IsContextType(n.Type) || (n.Type == nil && contextInitializer(i, n.Values)))
+		}
+	}
+}
+
+func contextInitializer(index int, values []ast.Expr) bool {
+	if len(values) == 1 {
+		return index == 0 && IsContextProducer(values[0])
+	}
+	return index < len(values) && IsContextProducer(values[index])
 }
 
 // bindsContext reports whether the assignment binds at least one LHS
@@ -124,11 +239,8 @@ func WalkFuncWithContextScope(typ *ast.FuncType, body *ast.BlockStmt, outerHasCo
 // context is always at the first return position — `_, cancel := ...`
 // discards the context and intentionally yields no in-scope name.
 func bindsContext(lhs, rhs []ast.Expr) bool {
-	if len(rhs) == 1 {
-		return len(lhs) >= 1 && IsContextProducer(rhs[0]) && isNamedIdent(lhs[0])
-	}
-	for i := 0; i < len(lhs) && i < len(rhs); i++ {
-		if IsContextProducer(rhs[i]) && isNamedIdent(lhs[i]) {
+	for i, expr := range lhs {
+		if isNamedIdent(expr) && contextInitializer(i, rhs) {
 			return true
 		}
 	}
@@ -139,21 +251,12 @@ func bindsContext(lhs, rhs []ast.Expr) bool {
 // either explicitly via its declared type (`var ctx context.Context`) or
 // implicitly via its initializer (`var ctx = context.Background()`).
 func valueSpecDeclaresContext(s *ast.ValueSpec) bool {
-	if IsContextType(s.Type) {
-		for _, n := range s.Names {
-			if isNamedIdent(n) {
-				return true
-			}
+	for i, name := range s.Names {
+		if isNamedIdent(name) && (IsContextType(s.Type) || contextInitializer(i, s.Values)) {
+			return true
 		}
 	}
-	if len(s.Values) == 0 {
-		return false
-	}
-	lhs := make([]ast.Expr, len(s.Names))
-	for i, n := range s.Names {
-		lhs[i] = n
-	}
-	return bindsContext(lhs, s.Values)
+	return false
 }
 
 // isNamedIdent reports whether e is a named identifier — anonymous (`_`)

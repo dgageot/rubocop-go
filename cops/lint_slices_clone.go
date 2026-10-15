@@ -28,10 +28,11 @@ func NewLintSlicesClone(opts ...cop.FuncOption) *prog.Func {
 				}
 				for _, file := range pkg.Syntax {
 					pass := &cop.Pass{Cop: fileCop, FileSet: p.Program.Fset, File: file, Info: pkg.TypesInfo, Package: pkg.Types}
-					if seen[pass.Filename()] || !fileCop.InScope(pass) {
+					filename := p.Program.Fset.PositionFor(file.Package, false).Filename
+					if seen[filename] || !fileCop.InScope(pass) {
 						continue
 					}
-					seen[pass.Filename()] = true
+					seen[filename] = true
 					fileCop.Check(pass)
 					for _, offense := range pass.Offenses() {
 						p.ReportOffense(offense)

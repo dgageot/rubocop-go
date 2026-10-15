@@ -91,6 +91,11 @@ func inspectConstructionNode(root ast.Node, visit func(ast.Node)) {
 			return false
 		case *ast.GoStmt:
 			visit(s)
+			// The invocation is asynchronous, but its receiver and arguments are not.
+			inspectConstructionNode(s.Call.Fun, visit)
+			for _, arg := range s.Call.Args {
+				inspectConstructionNode(arg, visit)
+			}
 			return false
 		case *ast.CallExpr:
 			visit(s)

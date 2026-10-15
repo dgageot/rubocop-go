@@ -132,7 +132,20 @@ func (a *streamCloseAnalysis) accesses(fn *types.Func, prefix string, locks map[
 		receiver: method.info.ObjectOf(method.fn.Recv.List[0].Names[0]),
 	}
 	scan.body(method.fn.Body, locks)
-	return scan.found
+	// A value receiver owns copied slots, but pointer fields still reach shared state.
+	var found []streamFieldAccess
+	for _, access := range scan.found {
+		if access.write && !streamSharedPath(fn.Signature().Recv().Type(), prefix, access.path, false) {
+			continue
+		}
+		for lock := range access.locks {
+			if !streamSharedPath(fn.Signature().Recv().Type(), prefix, lock, true) {
+				delete(access.locks, lock)
+			}
+		}
+		found = append(found, access)
+	}
+	return found
 }
 
 type streamMethodScan struct {
@@ -190,6 +203,48 @@ func (s *streamMethodScan) body(body *ast.BlockStmt, initial map[string]bool) {
 }
 
 func (s *streamMethodScan) lockOp(node ast.Node, locks map[string]bool) map[string]bool {
+	// An IIFE may release a lock held by its caller. Do not assume conditional
+	// acquisitions survive, but invalidate any potentially released locks.
+	ast.Inspect(node, func(n ast.Node) bool {
+		if _, ok := n.(*ast.FuncLit); ok {
+			return false
+		}
+		if call, ok := n.(*ast.CallExpr); ok {
+			if literal := calledFuncLit(call.Fun); literal != nil {
+				s.invalidateClosureLocks(literal.Body, locks)
+			}
+		}
+		return true
+	})
+	return s.directLockOp(node, locks)
+}
+
+func (s *streamMethodScan) invalidateClosureLocks(body *ast.BlockStmt, locks map[string]bool) {
+	ast.Inspect(body, func(n ast.Node) bool {
+		if _, ok := n.(*ast.FuncLit); ok {
+			return false
+		}
+		if call, ok := n.(*ast.CallExpr); ok {
+			if literal := calledFuncLit(call.Fun); literal != nil {
+				s.invalidateClosureLocks(literal.Body, locks)
+			}
+		}
+		// Deferred releases also run before the IIFE returns.
+		if deferred, ok := n.(*ast.DeferStmt); ok {
+			n = &ast.ExprStmt{X: deferred.Call}
+		}
+		// Retain only previously held locks, never acquisitions from this walk.
+		after := s.directLockOp(n, maps.Clone(locks))
+		for path := range locks {
+			if _, held := after[path]; !held {
+				delete(locks, path)
+			}
+		}
+		return true
+	})
+}
+
+func (s *streamMethodScan) directLockOp(node ast.Node, locks map[string]bool) map[string]bool {
 	stmt, ok := node.(*ast.ExprStmt)
 	if !ok {
 		return locks
@@ -267,7 +322,8 @@ func (s *streamMethodScan) inspect(node ast.Node, locks map[string]bool) {
 			s.inspect(v.Call, nil)
 			return false
 		case *ast.FuncLit:
-			s.body(v.Body, locks)
+			// Stored closures and callbacks need not run while these locks are held.
+			s.body(v.Body, nil)
 			return false
 		case *ast.AssignStmt:
 			for _, lhs := range v.Lhs {
@@ -280,6 +336,13 @@ func (s *streamMethodScan) inspect(node ast.Node, locks map[string]bool) {
 				s.found = append(s.found, streamFieldAccess{pos: v.Pos(), path: path, locks: maps.Clone(locks)})
 			}
 		case *ast.CallExpr:
+			if literal := calledFuncLit(v.Fun); literal != nil {
+				for _, arg := range v.Args {
+					s.inspect(arg, locks)
+				}
+				s.body(literal.Body, locks)
+				return false
+			}
 			sel, ok := v.Fun.(*ast.SelectorExpr)
 			if !ok {
 				return true
@@ -329,4 +392,36 @@ func streamFieldPath(prefix string, t types.Type, indices []int) (string, bool) 
 		t = field.Type()
 	}
 	return path.String(), true
+}
+
+// A slot belongs to the receiver copy until a pointer is dereferenced on its path.
+func streamSharedPath(t types.Type, prefix, path string, dereference bool) bool {
+	if path != prefix && !strings.HasPrefix(path, prefix+".") {
+		return true // A lock inherited from the caller is outside this receiver.
+	}
+	fields := strings.TrimPrefix(strings.TrimPrefix(path, prefix), ".")
+	if fields != "" {
+		for name := range strings.SplitSeq(fields, ".") {
+			if _, ok := t.Underlying().(*types.Pointer); ok {
+				return true
+			}
+			st, ok := t.Underlying().(*types.Struct)
+			if !ok {
+				return false
+			}
+			var fieldType types.Type
+			for field := range st.Fields() {
+				if field.Name() == name {
+					fieldType = field.Type()
+					break
+				}
+			}
+			if fieldType == nil {
+				return false
+			}
+			t = fieldType
+		}
+	}
+	_, pointer := t.Underlying().(*types.Pointer)
+	return dereference && pointer
 }

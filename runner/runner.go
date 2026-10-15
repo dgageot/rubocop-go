@@ -296,11 +296,13 @@ func typeCheck(fset *token.FileSet, dir string, files []*ast.File) (*types.Info,
 		Types:        make(map[ast.Expr]types.TypeAndValue),
 		Defs:         make(map[*ast.Ident]types.Object),
 		Uses:         make(map[*ast.Ident]types.Object),
+		Selections:   make(map[*ast.SelectorExpr]*types.Selection),
 		FileVersions: make(map[*ast.File]string),
 	}
 
 	cfg := &types.Config{
 		GoVersion: moduleGoVersion(dir),
+		Importer:  resolveImports(dir, files),
 		// Ignore import errors — we just want the type info we can get.
 		Error: func(error) {},
 	}

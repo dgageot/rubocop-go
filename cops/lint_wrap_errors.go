@@ -110,7 +110,7 @@ func isErrorType(t types.Type) bool {
 	if t == nil {
 		return false
 	}
-	named, ok := t.(*types.Named)
+	named, ok := types.Unalias(t).(*types.Named)
 	if !ok {
 		return false
 	}

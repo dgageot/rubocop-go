@@ -1,6 +1,7 @@
 package cops
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -85,6 +86,70 @@ func withoutContext() {
 	assert.Equal(t, 4, offenses[0].Pos.Line)
 	assert.Equal(t, 5, offenses[1].Pos.Line)
 	assert.Equal(t, 11, offenses[2].Pos.Line)
+}
+
+func TestSlogContextualLexicalVisibility(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		body string
+		want []string
+	}{
+		{"unnamed result", `func f() context.Context {
+			slog.Info("no binding")
+			return nil
+		}`, nil},
+		{"later declaration", `func f() {
+			slog.Info("before")
+			ctx := context.Background()
+			slog.Info("after")
+			_ = ctx
+		}`, []string{"after"}},
+		{"expired block", `func f() {
+			if true { ctx := context.Background(); slog.Info("inside"); _ = ctx }
+			slog.Info("outside")
+		}`, []string{"inside"}},
+		{"shadowed parameter", `func f(ctx context.Context) {
+			{ ctx := 1; slog.Info("shadowed"); _ = ctx }
+			slog.Info("restored")
+			_ = func(ctx int) { slog.Info("closure shadow") }
+			_ = func() { slog.Info("capture") }
+		}`, []string{"restored", "capture"}},
+		{"if initializer", `func f() {
+			if ctx := context.Background(); ctx != nil { slog.Info("then") } else { slog.Info("else") }
+			slog.Info("outside")
+		}`, []string{"then", "else"}},
+		{"for initializer", `func f() {
+			for ctx := context.Background(); ctx != nil; { slog.Info("loop"); break }
+			slog.Info("outside")
+		}`, []string{"loop"}},
+		{"switch case", `func f() {
+			switch { case true: ctx := context.Background(); slog.Info("case"); _ = ctx
+			default: slog.Info("default") }
+			slog.Info("outside")
+		}`, []string{"case"}},
+		{"select receive shadow", `func f(ctx context.Context, values chan int) {
+			select { case ctx := <-values: slog.Info("shadowed"); _ = ctx
+			default: slog.Info("default") }
+			slog.Info("outside")
+		}`, []string{"default", "outside"}},
+		{"closure capture timing", `func f() {
+			_ = func() { slog.Info("before") }
+			ctx := context.Background()
+			_ = func() { slog.Info("after") }
+			_ = ctx
+		}`, []string{"after"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "package p\nimport (\"context\"; \"log/slog\")\n" + tc.body
+			offenses := coptest.Run(t, NewLintSlogContextual(), src)
+			require.Len(t, offenses, len(tc.want))
+			lines := strings.Split(src, "\n")
+			for i, offense := range offenses {
+				assert.Contains(t, lines[offense.Pos.Line-1], `"`+tc.want[i]+`"`)
+			}
+		})
+	}
 }
 
 func TestSharedAdvisoryFactoriesScopesAndFreshInstances(t *testing.T) {

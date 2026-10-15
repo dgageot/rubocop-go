@@ -66,6 +66,8 @@ func TestConstructorPurityExecutionBoundaries(t *testing.T) {
 		{"deferred closure executes before return", `defer func() { go work() }(); return 0`, 1},
 		{"stored closure inside deferred closure", `defer func() { _ = func() { go work() } }(); return 0`, 0},
 		{"deferred closure inside stored closure", `return func() { defer func() { go work() }() }`, 0},
+		{"spawn in synchronous goroutine argument", `go consume(func() int { go work(); return 0 }()); return 0`, 2},
+		{"spawn in synchronous goroutine callee", `go func() func() { go work(); return func() {} }()(); return 0`, 2},
 		{"spawned closure is reported once", `go func() { go work() }(); return 0`, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

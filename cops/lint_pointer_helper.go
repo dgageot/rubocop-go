@@ -26,10 +26,27 @@ func newPointerHelperFile(opts ...cop.FuncOption) *cop.Func {
 			if p.Info == nil || ast.IsGenerated(p.File) {
 				return
 			}
-			p.ForEachCall(func(call *ast.CallExpr) {
-				fn, ok := calleeObject(p.Info, call).(*types.Func)
-				if !ok || fn.Pkg() == nil || fn.Pkg().Path() != "github.com/aws/aws-sdk-go-v2/aws" || len(call.Args) != 1 || call.Ellipsis.IsValid() {
-					return
+			ast.PreorderStack(p.File, nil, func(node ast.Node, stack []ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				parent := len(stack) - 1
+				for parent >= 0 {
+					if _, ok := stack[parent].(*ast.ParenExpr); !ok {
+						break
+					}
+					parent--
+				}
+				if parent >= 0 {
+					switch stack[parent].(type) {
+					case *ast.ExprStmt, *ast.GoStmt, *ast.DeferStmt:
+						return true // new expressions are only valid in value contexts.
+					}
+				}
+				fn, ok := p.CalleeObject(call).(*types.Func)
+				if !ok || fn.Signature().Recv() != nil || fn.Pkg() == nil || fn.Pkg().Path() != "github.com/aws/aws-sdk-go-v2/aws" || len(call.Args) != 1 || call.Ellipsis.IsValid() {
+					return true
 				}
 				var conversion string
 				switch fn.Name() {
@@ -64,18 +81,19 @@ func newPointerHelperFile(opts ...cop.FuncOption) *cop.Func {
 				case "Float64":
 					conversion = "float64"
 				default:
-					return
+					return true
 				}
 				scope := p.Package.Scope().Innermost(call.Pos())
 				if scope == nil {
-					return
+					return true
 				}
 				for _, name := range []string{"new", conversion} {
 					if _, obj := scope.LookupParent(name, call.Pos()); obj != types.Universe.Lookup(name) {
-						return
+						return true
 					}
 				}
 				p.Reportf(call, "use new(%s(value)) instead of aws.%s; preserve the argument's evaluation and conversion (omit the conversion only when the type already matches)", conversion, fn.Name())
+				return true
 			})
 		},
 	}, opts...)

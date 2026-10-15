@@ -70,6 +70,11 @@ func TestConstructorNetworkIOExecutionBoundaries(t *testing.T) {
 		{"deferred closure", `func NewClient() any { defer func() { http.Get("https://example.test") }(); return nil }`, 1},
 		{"stored closure inside deferred closure", `func NewClient() any { defer func() { _ = func() { http.Get("https://example.test") } }(); return nil }`, 0},
 		{"deferred closure inside returned closure", `func NewClient() any { return func() { defer func() { http.Get("https://example.test") }() } }`, 0},
+		{"goroutine argument", `func NewClient() any { go consume(http.Get("https://example.test")); return nil }`, 1},
+		{"goroutine receiver", `func NewClient() any { go func() *Client { http.Get("https://example.test"); return nil }().Run(); return nil }`, 1},
+		{"goroutine callee", `func NewClient() any { go func() func() { http.Get("https://example.test"); return func() {} }()(); return nil }`, 1},
+		{"lazy goroutine argument", `func NewClient() any { go consume(func() { http.Get("https://example.test") }); return nil }`, 0},
+		{"direct async request", `func NewClient() any { go http.Get("https://example.test"); return nil }`, 0},
 		{"goroutine body", `func NewClient() any { go func() { http.Get("https://example.test") }(); return nil }`, 0},
 		{"non IO helpers", `func NewClient() any { http.NewRequest("GET", "https://example.test", nil); return net.ParseIP("127.0.0.1") }`, 0},
 	} {

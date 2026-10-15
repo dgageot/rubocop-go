@@ -190,3 +190,71 @@ func TestErrorsAsTypeProgram(t *testing.T) {
 		assert.Equal(t, "Lint/ErrorsAsType", offense.CopName)
 	}
 }
+
+func TestErrorsAsTypeChecksEveryHealthyVariant(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, methods string
+	}{
+		{"custom As", `func (s *Source) As(target any) bool { s.target = target.(**E); *s.target = new(E); return true }`},
+		{"single Unwrap", `
+func (s *Source) Unwrap() error { return &retainer{s} }
+type retainer struct { source *Source }
+func (*retainer) Error() string { return "retainer" }
+func (r *retainer) As(target any) bool { r.source.target = target.(**E); *r.source.target = new(E); return true }
+`},
+		{"multi Unwrap", `
+func (s *Source) Unwrap() []error { return []error{&retainer{s}} }
+type retainer struct { source *Source }
+func (*retainer) Error() string { return "retainer" }
+func (r *retainer) As(target any) bool { r.source.target = target.(**E); *r.source.target = new(E); return true }
+`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			offenses := coptest.RunProgram(t, NewLintErrorsAsType(), coptest.ProgramFiles{
+				"go.mod": "module example.test\n\ngo 1.26\n",
+				"source.go": `package p
+import "errors"
+type E struct{}
+func (*E) Error() string { return "e" }
+type Source struct { target **E }
+func (*Source) Error() string { return "source" }
+func unsafeInTests(err *Source) { var e *E; if errors.As(err, &e) { println(e) } }
+func directMatch(err *Source) { var e *Source; if errors.As(err, &e) { println(e) } }
+`,
+				"source_test.go": "package p\n" + tc.methods,
+			})
+			require.Len(t, offenses, 1)
+			assert.Equal(t, 8, offenses[0].Pos.Line, "only the direct assignment is safe in both variants")
+		})
+	}
+}
+
+func TestErrorsAsTypeDoesNotRelyOnlyOnAugmentedVariant(t *testing.T) {
+	t.Parallel()
+	offenses := coptest.RunProgram(t, NewLintErrorsAsType(), coptest.ProgramFiles{
+		"go.mod": "module example.test\n\ngo 1.26\n",
+		"source.go": `package p
+import "errors"
+type Tagged interface { error; Tag() }
+type Source struct { target *Tagged }
+func (*Source) Error() string { return "source" }
+func (s *Source) As(target any) bool { s.target = target.(*Tagged); *s.target = nil; return true }
+func unsafeInProduction(err *Source) { var e Tagged; if errors.As(err, &e) { println(e) } }
+`,
+		"source_test.go": "package p\nfunc (*Source) Tag() {}\n",
+	})
+	assert.Empty(t, offenses, "the test-only Tag method bypasses custom As only in the augmented variant")
+}
+
+func TestErrorsAsTypeRetainsHealthyPackagesWithBrokenTests(t *testing.T) {
+	t.Parallel()
+	offenses := coptest.RunProgram(t, NewLintErrorsAsType(), coptest.ProgramFiles{
+		"go.mod":         "module example.test\n\ngo 1.26\n",
+		"sample.go":      errorsAsTypeFixture,
+		"sample_test.go": "package p\nvar _ = missing\n",
+	})
+	require.Len(t, offenses, 1)
+	assert.Equal(t, "Lint/ErrorsAsType", offenses[0].CopName)
+}

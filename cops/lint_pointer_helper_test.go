@@ -47,3 +47,55 @@ func f() { _ = String("x") }
 		assert.Contains(t, offense.Message, "conversion")
 	}
 }
+
+func TestPointerHelperRequiresFunctionValueContext(t *testing.T) {
+	t.Parallel()
+	offenses := coptest.RunProgram(t, NewLintPointerHelper(), coptest.ProgramFiles{
+		"go.mod":     "module example.test\n\ngo 1.26\nrequire github.com/aws/aws-sdk-go-v2 v0.0.0\nreplace github.com/aws/aws-sdk-go-v2 => ./aws\n",
+		"aws/go.mod": "module github.com/aws/aws-sdk-go-v2\n\ngo 1.26\n",
+		"aws/aws/pointer.go": `package aws
+func String(v string) *string { return &v }
+func Bool(v bool) *bool { return &v }
+type Ternary int
+func (Ternary) String() string { return "ternary" }
+func (Ternary) Bool() bool { return true }
+func (Ternary) Int32(v int32) *int32 { return &v }
+`,
+		"pointer.go": `package p
+import sdk "github.com/aws/aws-sdk-go-v2/aws"
+func consume(...*string) {}
+func f(t sdk.Ternary) {
+ _ = sdk.Ternary.String(t)
+ _ = sdk.Ternary.Bool(t)
+ _ = (sdk.Ternary.String)(t)
+ _ = t.Int32(1)
+ _ = (t.Int32)(1)
+ sdk.String("discarded")
+ (sdk.String("discarded with parentheses"))
+ ((sdk.String)("parenthesized function"))
+ go sdk.String("goroutine")
+ go (sdk.String)("parenthesized goroutine")
+ defer sdk.String("deferred")
+ defer (sdk.String)("parenthesized defer")
+ _ = sdk.String("value")
+ _ = (sdk.String)("parenthesized value")
+ _ = ((sdk.String("parenthesized call")))
+ consume(sdk.String("nested statement"))
+ go consume((sdk.String)("nested goroutine"))
+ defer consume((sdk.String("nested defer")))
+ consume(sdk.String(*sdk.String("nested helpers")))
+ sdk.String(*sdk.String("nested discarded helper"))
+ go sdk.String(*sdk.String("nested goroutine helper"))
+ defer sdk.String(*sdk.String("nested deferred helper"))
+ _ = sdk.Bool(true)
+}
+`,
+	})
+	require.Len(t, offenses, 12)
+	var lines []int
+	for _, offense := range offenses {
+		assert.Equal(t, "Lint/PointerHelper", offense.CopName)
+		lines = append(lines, offense.Pos.Line)
+	}
+	assert.ElementsMatch(t, []int{17, 18, 19, 20, 21, 22, 23, 23, 24, 25, 26, 27}, lines)
+}

@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/dgageot/rubocop-go/cop"
 	"github.com/dgageot/rubocop-go/coptest"
 )
 
@@ -90,4 +91,203 @@ func TestStdlibUUIDCustomRandomness(t *testing.T) {
 			})
 		}
 	}
+}
+
+// Model Google's retained reader and configuration entry points, including a
+// harmless delegation within the library rather than only no-op declarations.
+const uuidRandomnessFixture = `package uuid
+import (
+ "crypto/rand"
+ "io"
+)
+type UUID [16]byte
+var rander = rand.Reader
+var poolEnabled bool
+func (UUID) String() string { return "id" }
+func New() UUID {
+ var id UUID
+ if _, err := io.ReadFull(rander, id[:]); err != nil { panic(err) }
+ return id
+}
+func NewString() string { return New().String() }
+func MustParse(string) UUID { return UUID{} }
+func SetRand(r io.Reader) {
+ if r == nil { DisableRandPool(); rander = rand.Reader; return }
+ rander = r
+}
+func EnableRandPool() { poolEnabled = true }
+func DisableRandPool() { poolEnabled = false }
+`
+
+const uuidCandidatesFixture = `package p
+import "github.com/google/uuid"
+func IDs() []string {
+ return []string{
+  uuid.NewString(),
+  uuid.New().String(),
+  uuid.MustParse("6f0c2a1e-8d4b-4c7f-9a3e-2b5d7e9f1c03").String(),
+ }
+}
+`
+
+func uuidRandomnessFiles() coptest.ProgramFiles {
+	return coptest.ProgramFiles{
+		"go.mod":         "module example.test\n\ngo 1.27\nrequire (\n github.com/google/uuid v0.0.0\n example.test/setup v0.0.0\n)\nreplace github.com/google/uuid => ./google\nreplace example.test/setup => ./setup\n",
+		"google/go.mod":  "module github.com/google/uuid\n\ngo 1.27\n",
+		"google/uuid.go": uuidRandomnessFixture,
+		"setup/go.mod":   "module example.test/setup\n\ngo 1.27\nrequire github.com/google/uuid v0.0.0\n",
+		"setup/setup.go": "package setup\n",
+		"uuid.go":        uuidCandidatesFixture,
+	}
+}
+
+func TestStdlibUUIDDependencyRandomness(t *testing.T) {
+	requireGo127(t)
+	t.Parallel()
+	for _, configure := range []string{
+		`uuid.SetRand(strings.NewReader(strings.Repeat("x", 64)))`,
+		`uuid.EnableRandPool()`,
+		`uuid.DisableRandPool()`,
+		`saved := uuid.SetRand; saved(strings.NewReader(strings.Repeat("x", 64)))`,
+	} {
+		for _, importFile := range []string{"setup_import.go", "setup_import_test.go", "setup_external_test.go"} {
+			t.Run(configure+"/"+importFile, func(t *testing.T) {
+				t.Parallel()
+				files := uuidRandomnessFiles()
+				files["setup/setup.go"] = `package setup
+import (
+ "github.com/google/uuid"
+ "strings"
+)
+var _ = strings.NewReader
+func init() { ` + configure + ` }
+`
+				pkg := "p"
+				if importFile == "setup_external_test.go" {
+					pkg = "p_test"
+				}
+				files[importFile] = "package " + pkg + "\nimport _ \"example.test/setup\"\n"
+				assertUUIDLiteralOnly(t, coptest.RunProgram(t, NewLintStdlibUUID(), files))
+			})
+		}
+	}
+}
+
+func TestStdlibUUIDRandReaderMutation(t *testing.T) {
+	requireGo127(t)
+	t.Parallel()
+	for _, tc := range []struct{ name, src string }{
+		{"assignment", `func init() { crand.Reader = strings.NewReader("random") }`},
+		{"multiple assignment", `func init() { _, (crand.Reader) = 1, strings.NewReader("random") }`},
+		{"address escape", `func install(p *io.Reader) { *p = strings.NewReader("random") }; func init() { install(&(crand.Reader)) }`},
+		{"retained address", `var saved = &crand.Reader`},
+		{"range assignment", `func init() { for _, crand.Reader = range []io.Reader{strings.NewReader("random")} {} }`},
+	} {
+		for _, location := range []string{"root", "internal test", "external test", "dependency", "test dependency"} {
+			t.Run(tc.name+"/"+location, func(t *testing.T) {
+				t.Parallel()
+				files := uuidRandomnessFiles()
+				pkg, path := "p", "random.go"
+				switch location {
+				case "internal test":
+					path = "random_test.go"
+				case "external test":
+					pkg, path = "p_test", "random_test.go"
+				case "dependency", "test dependency":
+					pkg, path = "setup", "setup/setup.go"
+					importPath := "setup_import.go"
+					if location == "test dependency" {
+						importPath = "setup_import_test.go"
+					}
+					files[importPath] = "package p\nimport _ \"example.test/setup\"\n"
+				}
+				files[path] = "package " + pkg + `
+import (
+ crand "crypto/rand"
+ "strings"
+ "io"
+)
+var _ io.Reader = crand.Reader
+var _ = strings.NewReader
+` + tc.src
+				assertUUIDLiteralOnly(t, coptest.RunProgram(t, NewLintStdlibUUID(), files))
+			})
+		}
+	}
+}
+
+func TestStdlibUUIDRandomnessPositiveControls(t *testing.T) {
+	requireGo127(t)
+	t.Parallel()
+	for _, tc := range []struct{ name, dependency string }{
+		{"upstream delegation", ""},
+		{"ordinary reader use", `package setup
+import "crypto/rand"
+var reader = rand.Reader
+func Read(p []byte) (int, error) { return rand.Reader.Read(p) }
+`},
+		{"shadowed reader", `package setup
+import crand "crypto/rand"
+var _ = crand.Reader
+func f() { crand := struct{ Reader int }{}; crand.Reader = 1; _ = &crand.Reader }
+`},
+		{"unrelated configuration names", `package setup
+func SetRand() {}; func EnableRandPool() {}; func init() { SetRand(); EnableRandPool() }
+`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			files := uuidRandomnessFiles()
+			if tc.dependency != "" {
+				files["setup/setup.go"] = tc.dependency
+				files["setup_import.go"] = "package p\nimport _ \"example.test/setup\"\n"
+			}
+			require.Len(t, coptest.RunProgram(t, NewLintStdlibUUID(), files), 3)
+		})
+	}
+}
+
+func TestStdlibUUIDRandReaderOutsideScope(t *testing.T) {
+	requireGo127(t)
+	t.Parallel()
+	files := uuidRandomnessFiles()
+	files["excluded/random_test.go"] = `package excluded
+import "crypto/rand"
+var saved = &rand.Reader
+`
+	c := NewLintStdlibUUID(cop.WithScope(cop.Not(cop.UnderDir("excluded"))))
+	assertUUIDLiteralOnly(t, coptest.RunProgram(t, c, files))
+}
+
+func assertUUIDLiteralOnly(t *testing.T, offenses []cop.Offense) {
+	t.Helper()
+	require.Len(t, offenses, 1)
+	assert.Contains(t, offenses[0].Message, "canonical literal")
+}
+
+func TestStdlibUUIDTransitiveRandomness(t *testing.T) {
+	requireGo127(t)
+	t.Parallel()
+	files := uuidRandomnessFiles()
+	files["go.mod"] += "replace example.test/randomsetup => ./randomsetup\nrequire example.test/randomsetup v0.0.0 // indirect\n"
+	files["setup/go.mod"] += "require example.test/randomsetup v0.0.0\n"
+	files["setup/setup.go"] = "package setup\nimport _ \"example.test/randomsetup\"\n"
+	files["randomsetup/go.mod"] = "module example.test/randomsetup\n\ngo 1.27\nrequire github.com/google/uuid v0.0.0\n"
+	files["randomsetup/random.go"] = `package randomsetup
+import "github.com/google/uuid"
+func init() { uuid.EnableRandPool() }
+`
+	files["setup_import_test.go"] = "package p_test\nimport _ \"example.test/setup\"\n"
+	assertUUIDLiteralOnly(t, coptest.RunProgram(t, NewLintStdlibUUID(), files))
+}
+
+func TestStdlibUUIDLiteralSurvivesRandomnessLoadError(t *testing.T) {
+	requireGo127(t)
+	t.Parallel()
+	files := uuidRandomnessFiles()
+	files["broken_test.go"] = "package p\nvar broken = undefined\n"
+	offenses := coptest.RunProgram(t, NewLintStdlibUUID(), files)
+	require.Len(t, offenses, 2)
+	assert.Contains(t, offenses[0].Message, "cannot check UUID randomness")
+	assertUUIDLiteralOnly(t, offenses[1:])
 }

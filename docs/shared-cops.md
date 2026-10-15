@@ -131,13 +131,15 @@ no project-specific directory exclusions are built in.
 ### Logging, errors, and lifecycle
 
 - **SlogContextual:** `slog.Info("started")` → `slog.InfoContext(ctx, "started")`
-  when a context is available. Checks top-level helpers, not logger methods.
+  when a context is lexically available, respecting declaration order and shadowing.
+  Checks top-level helpers, not logger methods.
 - **ConstructorPurity:** move `go worker()` from `NewClient` to an explicit
   lifecycle method. Checks direct construction-time statements, including IIFEs,
   not side effects hidden in helpers. Intentionally lazy closures are excluded.
 - **ConstructorNetworkIO:** move `net.Dial(...)` from a constructor to an explicit
   operation. Covers selected `net`/`net/http` APIs, not every network method.
-  Network I/O and background work in constructors can be intentional; opt in
+  Goroutine bodies are excluded, but their synchronously evaluated receivers and
+  arguments are checked. Network I/O and background work in constructors can be intentional; opt in
   only when this matches your lifecycle policy.
 - **ConstructorCommandExec:** move `exec.Command(...)` and `cmd.Run()` from
   constructors to explicit operations. Covers `Command`, `CommandContext`, and
@@ -156,7 +158,7 @@ no project-specific directory exclusions are built in.
   stdout-writing APIs are not covered. Selecting `Lint/FmtPrint` as well can
   produce overlapping diagnostics.
 - **WrapErrors:** `fmt.Errorf("read: %v", err)` → `fmt.Errorf("read: %w", err)`.
-  Checks builtin `error` arguments and leaves calls already containing `%w`
+  Checks builtin `error` arguments, including aliases, and leaves calls already containing `%w`
   alone. Deliberate error abstraction boundaries may need suppression.
 - **ErrorStringMatching:** replace `strings.Contains(err.Error(), "missing")`
   with `errors.Is` or `errors.As` when the API exposes structured errors.
@@ -169,21 +171,28 @@ no project-specific directory exclusions are built in.
   or make them reader-owned. Opt in only for APIs whose contract permits these
   methods to run concurrently. The analysis follows receiver fields and helpers
   with common mutexes, not arbitrary aliases, containers, or cancellation.
+  Stored closures and callbacks do not inherit locks from their declaration site;
+  immediate closures do. Value-receiver writes to copied fields are excluded,
+  while shared pointees remain checked; copied mutexes do not prove synchronization.
 
 ### Modernization
 
 - **NewExpr:** `v := value; return &v` → `return new(value)`. Requires adjacent
   statements, a fresh single-use temporary, and constant companion results.
 - **PointerHelper:** `aws.Int64(42)` → `new(int64(42))`. Only AWS SDK v2 scalar
-  pointer helpers are matched; preserve conversions and argument evaluation.
+  pointer helpers are matched, not methods or calls whose results are discarded
+  directly by expression, defer, or go statements. Preserve conversions and
+  argument evaluation.
 - **ReflectFields:** paired `v.Field(i)`/`v.Type().Field(i)` loops →
   `for field, value := range v.Fields()`. Receiver mutation, escape, unrelated
   index uses, and unsafe callbacks are excluded.
 - **StdlibUUID:** Google UUID `NewString()` → standard-library
   `uuid.NewV4().String()`. Only compatible string-producing patterns are matched;
   exposed UUID types, UUIDv5, and general parsing are excluded. Randomness
-  configuration in production or tests suppresses recommendations, even when
-  those files are outside the configured candidate scope.
+  configuration in production, tests, or imported dependencies suppresses random-UUID
+  recommendations, including assignments or address escapes of `crypto/rand.Reader`,
+  even outside the configured candidate scope. Canonical literal parsing remains
+  eligible independently of randomness configuration or randomness-load failures.
 - **URLClone:** replace an equivalent nil-safe deep-copy helper with `u.Clone()`.
   Ordinary shallow copies are excluded because cloning also copies userinfo.
 - **JSONMarshalWrite:** buffered `Encoder.Encode` followed by newline trimming →
@@ -245,7 +254,8 @@ no project-specific directory exclusions are built in.
   targets require the identical source type parameter: reflection assignability
   between named and unnamed instantiations is not equivalent to a type assertion.
   Includes resolved production, internal/external tests, and test-only packages;
-  skips generated files.
+  skips generated files. Safety must hold in every healthy production/test package
+  variant, including methods added by internal tests.
 
 - **MapsCopy:** Plain `for k, v := range src { dst[k] = v }` → `maps.Copy(dst, src)`. Only local identifiers and exact key/value types are matched; transformations, filters, extra work, and externally assigned loop variables are excluded. Separate merges keep their original order; nil destinations are not initialized. Selecting MapsClone too can produce overlapping diagnostics. Includes resolved production, internal/external tests,
   and test-only packages; generated code is excluded.
