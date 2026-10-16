@@ -1,6 +1,8 @@
 package cops
 
 import (
+	"go/parser"
+	"go/token"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -164,6 +166,72 @@ func TestDeferMutexUnlockClosureScopes(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Len(t, coptest.Run(t, NewLintDeferMutexUnlock(), "package p\n"+tc.src), tc.want)
+		})
+	}
+}
+
+func TestDeferMutexUnlockStoredClosureUses(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"called", `func f() { mu.Lock(); callback := func() { mu.Unlock(); mu.Lock() }; callback(); mu.Unlock() }`, 0},
+		{"passed", `func f() { mu.Lock(); callback := func() { mu.Unlock(); mu.Lock() }; run(callback); mu.Unlock() }`, 0},
+		{"selector callback", `func f() { mu.Lock(); callback := func() { mu.Unlock(); mu.Lock() }; exec.Run((callback)); mu.Unlock() }`, 0},
+		{"declared before lock", `func f() { callback := func() { mu.Unlock(); mu.Lock() }; mu.Lock(); callback(); mu.Unlock() }`, 0},
+		{"var declaration", `func f() { var callback = func() { mu.Unlock(); mu.Lock() }; mu.Lock(); run(callback); mu.Unlock() }`, 0},
+		{"reassigned", `func f() { callback := func() {}; mu.Lock(); callback = func() { mu.Unlock(); mu.Lock() }; callback(); mu.Unlock() }`, 0},
+		{"conditional reassignment", `func f() { callback := func() {}; mu.Lock(); if ready { callback = func() { mu.Unlock(); mu.Lock() } }; callback(); mu.Unlock() }`, 0},
+		{"reassignment inside called closure", `func f() { callback := func() {}; mu.Lock(); func() { callback = func() { mu.Unlock(); mu.Lock() } }(); callback(); mu.Unlock() }`, 0},
+		{"captured reassignment", `func f() { callback := func() {}; invoke := func() { callback() }; mu.Lock(); callback = func() { mu.Unlock(); mu.Lock() }; invoke(); mu.Unlock() }`, 0},
+		{"called in immediate closure", `func f() { callback := func() { mu.Unlock(); mu.Lock() }; mu.Lock(); func() { callback() }(); mu.Unlock() }`, 0},
+		{"called in passed closure", `func f() { callback := func() { mu.Unlock(); mu.Lock() }; mu.Lock(); run(func() { callback() }); mu.Unlock() }`, 0},
+		{"called in stored closure", `func f() { callback := func() { mu.Unlock(); mu.Lock() }; invoke := func() { callback() }; mu.Lock(); run(invoke); mu.Unlock() }`, 0},
+		{"nested local closure", `func f() { mu.Lock(); func() { callback := func() { mu.Unlock(); mu.Lock() }; callback() }(); mu.Unlock() }`, 0},
+		{"alias", `func f() { callback := func() { mu.Unlock(); mu.Lock() }; alias := callback; mu.Lock(); alias(); mu.Unlock() }`, 0},
+		{"alias chain", `func f() { callback := func() { mu.Unlock(); mu.Lock() }; alias := callback; mu.Lock(); next := alias; run(next); mu.Unlock() }`, 0},
+		{"alias before reassignment", `func f() { callback := func() { mu.Unlock(); mu.Lock() }; alias := callback; callback = func() {}; mu.Lock(); alias(); mu.Unlock() }`, 0},
+		{"parallel assignment", `func f() { callback, other := func() { mu.Unlock(); mu.Lock() }, func() {}; callback, other = other, callback; mu.Lock(); other(); mu.Unlock() }`, 0},
+		{"var alias", `func f() { callback := func() { mu.Unlock(); mu.Lock() }; var alias = callback; mu.Lock(); alias(); mu.Unlock() }`, 0},
+		{"recursive callback", `func f() { var callback func(); callback = func() { callback(); mu.Unlock(); mu.Lock() }; mu.Lock(); callback(); mu.Unlock() }`, 0},
+		{"alias cycle", `func f() { first, second := func() {}, func() { mu.Unlock(); mu.Lock() }; first = second; second = first; mu.Lock(); run(first); mu.Unlock() }`, 0},
+		{"read-lock callback", `func f() { mu.RLock(); callback := func() { mu.RUnlock(); mu.RLock() }; callback(); mu.RUnlock() }`, 0},
+		{"go callback", `func f() { mu.Lock(); callback := func() { mu.Unlock() }; go callback(); mu.Unlock() }`, 0},
+		{"callback container", `func f() { callback := func() { mu.Unlock(); mu.Lock() }; mu.Lock(); runMany([]func(){callback}); mu.Unlock() }`, 0},
+		{"unused", `func f() { mu.Lock(); callback := func() { mu.Unlock(); mu.Lock() }; _ = callback; mu.Unlock() }`, 1},
+		{"unused before lock", `func f() { callback := func() { mu.Unlock(); mu.Lock() }; _ = callback; mu.Lock(); work(); mu.Unlock() }`, 1},
+		{"unused reassignment", `func f() { callback := func() {}; mu.Lock(); callback = func() { mu.Unlock(); mu.Lock() }; _ = callback; mu.Unlock() }`, 1},
+		{"unused alias", `func f() { mu.Lock(); callback := func() { mu.Unlock(); mu.Lock() }; alias := callback; _ = alias; mu.Unlock() }`, 1},
+		{"unused nested caller", `func f() { mu.Lock(); callback := func() { mu.Unlock(); mu.Lock() }; unused := func() { callback() }; _ = unused; mu.Unlock() }`, 1},
+		{"used before lock only", `func f() { callback := func() { mu.Lock(); mu.Unlock(); work() }; callback(); mu.Lock(); work(); mu.Unlock() }`, 1},
+		{"different receiver", `func f() { callback := func() { other.Unlock(); other.Lock() }; mu.Lock(); callback(); mu.Unlock() }`, 1},
+		{"callback defer local to closure", `func f() { callback := func() { defer cleanup() }; mu.Lock(); callback(); mu.Unlock() }`, 1},
+		{"callback return local to closure", `func f() { callback := func() { return }; mu.Lock(); callback(); mu.Unlock() }`, 1},
+		{"recursive callback without locks", `func f() { var callback func(); callback = func() { callback() }; mu.Lock(); callback(); mu.Unlock() }`, 1},
+		{"shadowed callback", `func f() { callback := func() { mu.Unlock(); mu.Lock() }; _ = callback; mu.Lock(); { callback := func() {}; callback() }; mu.Unlock() }`, 1},
+		{"shadowed initializer alias", `func f() { callback := func() { mu.Unlock(); mu.Lock() }; mu.Lock(); { callback := callback; callback() }; mu.Unlock() }`, 0},
+		{"callback parameter shadows capture", `func f() { callback := func() { mu.Unlock(); mu.Lock() }; _ = callback; mu.Lock(); func(callback func()) { callback() }(func() {}); mu.Unlock() }`, 1},
+		{"captured from enclosing function", `func f() { callback := func() { mu.Unlock(); mu.Lock() }; _ = func() { mu.Lock(); callback(); mu.Unlock() } }`, 0},
+		{"nested var alias", `func f() { callback := func() { mu.Unlock(); mu.Lock() }; mu.Lock(); { var callback = callback; callback() }; mu.Unlock() }`, 0},
+		{"unused alias cycle", `func f() { first, second := func() {}, func() { mu.Unlock(); mu.Lock() }; first = second; second = first; mu.Lock(); _ = first; mu.Unlock() }`, 1},
+		{"parallel declaration harmless value", `func f() { callback, other := func() {}, func() { mu.Unlock(); mu.Lock() }; _ = other; mu.Lock(); callback(); mu.Unlock() }`, 1},
+		{"shadowed local closure", `func f() { callback := func() {}; mu.Lock(); { callback := func() { mu.Unlock(); mu.Lock() }; _ = callback }; callback(); mu.Unlock() }`, 1},
+		{"separate functions", `func g() { callback := func() { mu.Unlock(); mu.Lock() }; _ = callback }; func f() { callback := func() {}; mu.Lock(); callback(); mu.Unlock() }`, 1},
+		{"range variable shadows capture", `func f() { callback := func() { mu.Unlock(); mu.Lock() }; _ = callback; mu.Lock(); for _, callback := range callbacks { callback() }; mu.Unlock() }`, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Production parsing omits ast.Object links, so exercise both modes.
+			for _, mode := range []parser.Mode{0, parser.SkipObjectResolution} {
+				fset := token.NewFileSet()
+				file, err := parser.ParseFile(fset, "sample.go", "package p\n"+tc.src, mode)
+				require.NoError(t, err)
+				c := NewLintDeferMutexUnlock()
+				p := &cop.Pass{Cop: c, FileSet: fset, File: file}
+				c.Check(p)
+				assert.Len(t, p.Offenses(), tc.want, "parser mode %v", mode)
+			}
 		})
 	}
 }

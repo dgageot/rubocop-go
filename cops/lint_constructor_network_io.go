@@ -17,7 +17,7 @@ import (
 //
 // Detection is intentionally low-noise: only calls to selected functions and
 // methods in net and net/http are flagged (net.Dial*/Listen*/Lookup*,
-// Resolver.Lookup*, http.Get/Head/Post/PostForm). Method calls such as .Do
+// Resolver.Lookup*, ListenConfig.Listen/ListenPacket, http.Get/Head/Post/PostForm). Method calls such as .Do
 // and .Accept are out of scope for now.
 //
 // Calls inside nested function literals are ignored unless the literal is
@@ -97,7 +97,7 @@ func networkIOFuncName(obj types.Object) (string, string, bool) {
 	}
 	switch pkg.Path() {
 	case "net":
-		if (recv == nil || receiverName == "Resolver" || receiverName == "Dialer") && slices.Contains(netIOFuncNames, name) {
+		if (recv == nil || receiverName == "Resolver" || receiverName == "Dialer" || receiverName == "ListenConfig") && slices.Contains(netIOFuncNames, name) {
 			return "net", name, true
 		}
 	case "net/http":

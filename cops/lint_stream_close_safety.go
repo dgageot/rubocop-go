@@ -63,7 +63,17 @@ func NewLintStreamCloseSafety() *prog.Func {
 						for _, spec := range gen.Specs {
 							name := pkg.TypesInfo.Defs[spec.(*ast.TypeSpec).Name].(*types.TypeName)
 							if !name.IsAlias() {
-								a.check(types.NewPointer(name.Type()), pkg.Types)
+								t := name.Type()
+								if named, ok := t.(*types.Named); ok && named.TypeParams().Len() > 0 {
+									// Use declaration parameters for every method, not each receiver's fresh parameters.
+									args := make([]types.Type, named.TypeParams().Len())
+									for i := range args {
+										args[i] = named.TypeParams().At(i)
+									}
+									// With validation disabled, Instantiate cannot return an error.
+									t, _ = types.Instantiate(nil, named, args, false)
+								}
+								a.check(types.NewPointer(t), pkg.Types)
 							}
 						}
 					}
@@ -282,6 +292,9 @@ func (s *streamMethodScan) releaseCalls(node ast.Node, released map[string]bool,
 				return false
 			}
 		case *ast.CallExpr:
+			if s.unevaluated(v) {
+				return false
+			}
 			s.releaseCalls(v.Fun, released, visiting)
 			for _, arg := range v.Args {
 				s.releaseCalls(arg, released, visiting)
@@ -592,7 +605,36 @@ func (s *streamMethodScan) address(expr ast.Expr, locks map[string]bool, collect
 	}
 }
 
+// Constant builtins and unsafe's layout queries do not evaluate their arguments.
+func (s *streamMethodScan) unevaluated(call *ast.CallExpr) bool {
+	if !s.method.info.Types[call.Fun].IsBuiltin() {
+		return false
+	}
+	if s.method.info.Types[call].Value != nil {
+		return true
+	}
+	fun := ast.Unparen(call.Fun)
+	if sel, ok := fun.(*ast.SelectorExpr); ok {
+		fun = sel.Sel
+	}
+	if id, ok := fun.(*ast.Ident); ok {
+		switch id.Name {
+		case "Sizeof", "Alignof", "Offsetof":
+			return true
+		}
+	}
+	return false
+}
+
 func (s *streamMethodScan) call(call *ast.CallExpr, locks map[string]bool, collect, synchronous bool) map[string]bool {
+	if s.unevaluated(call) {
+		return locks
+	}
+	fun := s.method.info.Types[call.Fun]
+	if fun.IsType() || fun.IsBuiltin() {
+		// Conversions and builtins are not sequencing calls; their loads may follow sibling calls.
+		return s.evalGroup(nil, call.Args, locks, collect)
+	}
 	// This invocation, including its arguments, precedes later sibling calls.
 	unordered := s.unordered
 	s.unordered = nil

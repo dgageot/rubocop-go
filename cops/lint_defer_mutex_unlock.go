@@ -3,6 +3,7 @@ package cops
 import (
 	"go/ast"
 	"go/token"
+	"slices"
 
 	"github.com/dgageot/rubocop-go/cop"
 )
@@ -22,6 +23,8 @@ func NewLintDeferMutexUnlock(opts ...cop.FuncOption) *cop.Func {
 			Severity:    cop.Warning,
 		},
 		Run: func(p *cop.Pass) {
+			bindings := make(mutexClosureBindings)
+			ast.Walk(&mutexClosureVisitor{scope: &mutexClosureScope{}, bindings: bindings}, p.File)
 			ast.Inspect(p.File, func(n ast.Node) bool {
 				var body *ast.BlockStmt
 				switch fn := n.(type) {
@@ -32,14 +35,14 @@ func NewLintDeferMutexUnlock(opts ...cop.FuncOption) *cop.Func {
 				default:
 					return true
 				}
-				checkDeferMutexUnlockBody(p, body)
+				checkDeferMutexUnlockBody(p, body, bindings)
 				return true
 			})
 		},
 	}, opts...)
 }
 
-func checkDeferMutexUnlockBody(p *cop.Pass, body *ast.BlockStmt) {
+func checkDeferMutexUnlockBody(p *cop.Pass, body *ast.BlockStmt, bindings mutexClosureBindings) {
 	if body == nil {
 		return
 	}
@@ -51,7 +54,7 @@ func checkDeferMutexUnlockBody(p *cop.Pass, body *ast.BlockStmt) {
 		if i+1 < len(body.List) && isDeferUnlock(body.List[i+1], lock) {
 			continue
 		}
-		if isSafeManualUnlockAtEnd(body.List, i, lock) {
+		if isSafeManualUnlockAtEnd(body.List, i, lock, bindings) {
 			p.Reportf(stmt,
 				"%s.%s() is only released at the end of this scope; use `defer %s.%s()` immediately after locking",
 				lock.recv, lock.method, lock.recv, lock.unlockMethod())
@@ -122,7 +125,7 @@ func isDeferUnlock(stmt ast.Stmt, lock mutexCall) bool {
 	return sel.Sel.Name == lock.unlockMethod() && selectorReceiver(sel.X) == lock.recv
 }
 
-func isSafeManualUnlockAtEnd(stmts []ast.Stmt, lockIdx int, lock mutexCall) bool {
+func isSafeManualUnlockAtEnd(stmts []ast.Stmt, lockIdx int, lock mutexCall, bindings mutexClosureBindings) bool {
 	unlockIdx := len(stmts) - 1
 	if ret, ok := stmts[unlockIdx].(*ast.ReturnStmt); ok {
 		if !returnResultsAreSideEffectFree(ret) {
@@ -137,22 +140,151 @@ func isSafeManualUnlockAtEnd(stmts []ast.Stmt, lockIdx int, lock mutexCall) bool
 	if !ok || recv != lock.recv || name != lock.unlockMethod() {
 		return false
 	}
+	scan := mutexLockScanner{lock: lock, bindings: bindings, seen: make(map[*mutexClosureBinding]bool)}
 	for _, stmt := range stmts[lockIdx+1 : unlockIdx] {
-		if stmtPreventsDeferredUnlock(stmt) || nodeContainsLockOp(stmt, lock) {
+		if stmtPreventsDeferredUnlock(stmt) || scan.containsLockOp(stmt) {
 			return false
 		}
 	}
 	// Even a selector call can evaluate callbacks in its arguments.
 	call := ast.Unparen(stmts[unlockIdx].(*ast.ExprStmt).X).(*ast.CallExpr)
 	for _, arg := range call.Args {
-		if nodeContainsLockOp(arg, lock) {
+		if scan.containsLockOp(arg) || scan.valueContainsLockOp(arg) {
 			return false
 		}
 	}
 	return true
 }
 
-func nodeContainsLockOp(node ast.Node, lock mutexCall) bool {
+// Bindings retain every syntactic assignment, not just the last one: branches,
+// aliases, and captured reassignments can select any of those closure values.
+// Only local identifier aliases are followed; this is not call-graph analysis.
+type mutexClosureBindings map[*ast.Ident]*mutexClosureBinding
+
+type mutexClosureBinding struct {
+	values []ast.Expr
+}
+
+type mutexClosureScope struct {
+	parent *mutexClosureScope
+	names  map[string]*mutexClosureBinding
+}
+
+func (s *mutexClosureScope) lookup(name string) *mutexClosureBinding {
+	for ; s != nil; s = s.parent {
+		if binding := s.names[name]; binding != nil {
+			return binding
+		}
+	}
+	return nil
+}
+
+type mutexClosureVisitor struct {
+	node     ast.Node
+	scope    *mutexClosureScope
+	bindings mutexClosureBindings
+}
+
+func (v *mutexClosureVisitor) bind(id *ast.Ident, declare bool, value ast.Expr) {
+	if id.Name == "_" {
+		return
+	}
+	binding := v.scope.names[id.Name]
+	if !declare {
+		binding = v.scope.lookup(id.Name)
+	}
+	if binding == nil {
+		binding = &mutexClosureBinding{}
+		if v.scope.names == nil {
+			v.scope.names = make(map[string]*mutexClosureBinding)
+		}
+		v.scope.names[id.Name] = binding
+	}
+	v.bindings[id] = binding
+	if value != nil {
+		binding.values = append(binding.values, value)
+	}
+}
+
+func (v *mutexClosureVisitor) signature(fields *ast.FieldList) {
+	if fields != nil {
+		for _, field := range fields.List {
+			for _, name := range field.Names {
+				v.bind(name, true, nil)
+			}
+		}
+	}
+}
+
+func (v *mutexClosureVisitor) Visit(node ast.Node) ast.Visitor {
+	if node == nil {
+		// A local declaration starts after its initializer has been visited.
+		switch n := v.node.(type) {
+		case *ast.AssignStmt:
+			for i, lhs := range n.Lhs {
+				if id, ok := lhs.(*ast.Ident); ok {
+					var value ast.Expr
+					if len(n.Lhs) == len(n.Rhs) {
+						value = n.Rhs[i]
+					}
+					v.bind(id, n.Tok == token.DEFINE, value)
+				}
+			}
+		case *ast.ValueSpec:
+			for i, name := range n.Names {
+				var value ast.Expr
+				if len(n.Names) == len(n.Values) {
+					value = n.Values[i]
+				}
+				v.bind(name, true, value)
+			}
+		}
+		return nil
+	}
+	child := &mutexClosureVisitor{node: node, scope: v.scope, bindings: v.bindings}
+	switch n := node.(type) {
+	case *ast.FuncDecl:
+		child.scope = &mutexClosureScope{parent: v.scope}
+		child.signature(n.Recv)
+		child.signature(n.Type.Params)
+		child.signature(n.Type.Results)
+	case *ast.FuncLit:
+		child.scope = &mutexClosureScope{parent: v.scope}
+		child.signature(n.Type.Params)
+		child.signature(n.Type.Results)
+	case *ast.BlockStmt:
+		switch v.node.(type) {
+		case *ast.FuncDecl, *ast.FuncLit:
+		default:
+			child.scope = &mutexClosureScope{parent: v.scope}
+		}
+		if loop, ok := v.node.(*ast.RangeStmt); ok && loop.Tok == token.DEFINE {
+			for _, expr := range []ast.Expr{loop.Key, loop.Value} {
+				if id, ok := expr.(*ast.Ident); ok {
+					child.bind(id, true, nil)
+				}
+			}
+		}
+	case *ast.IfStmt, *ast.ForStmt, *ast.RangeStmt, *ast.SwitchStmt, *ast.TypeSwitchStmt,
+		*ast.SelectStmt, *ast.CaseClause, *ast.CommClause:
+		child.scope = &mutexClosureScope{parent: v.scope}
+	case *ast.Ident:
+		if sel, ok := v.node.(*ast.SelectorExpr); !ok || sel.Sel != n {
+			if binding := child.scope.lookup(n.Name); binding != nil {
+				child.bindings[n] = binding
+			}
+		}
+	}
+	return child
+}
+
+type mutexLockScanner struct {
+	lock     mutexCall
+	bindings mutexClosureBindings
+	seen     map[*mutexClosureBinding]bool
+}
+
+func (s *mutexLockScanner) containsLockOp(node ast.Node) bool {
 	found := false
 	ast.Inspect(node, func(n ast.Node) bool {
 		if found {
@@ -160,32 +292,45 @@ func nodeContainsLockOp(node ast.Node, lock mutexCall) bool {
 		}
 		switch n := n.(type) {
 		case *ast.FuncLit:
-			return false // A stored closure does not execute here.
+			return false // Stored closures are inspected only when used below.
 		case *ast.CallExpr:
-			if sel, ok := ast.Unparen(n.Fun).(*ast.SelectorExpr); ok && selectorReceiver(sel.X) == lock.recv {
+			if sel, ok := ast.Unparen(n.Fun).(*ast.SelectorExpr); ok && selectorReceiver(sel.X) == s.lock.recv {
 				switch sel.Sel.Name {
 				case "Lock", "Unlock", "RLock", "RUnlock":
 					found = true
 				}
 			}
-			if literal := calledFuncLit(n.Fun); !found && literal != nil {
-				found = nodeContainsLockOp(literal.Body, lock)
+			if !found {
+				found = s.valueContainsLockOp(n.Fun)
 			}
-			// Inline callbacks may execute even when the callee is a selector.
+			// Arguments may be callbacks, including aliases and containers.
 			for _, arg := range n.Args {
 				if found {
 					break
 				}
-				ast.Inspect(arg, func(node ast.Node) bool {
-					if found {
-						return false
-					}
-					if literal, ok := node.(*ast.FuncLit); ok {
-						found = nodeContainsLockOp(literal.Body, lock)
-						return false
-					}
-					return true
-				})
+				found = s.valueContainsLockOp(arg)
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+func (s *mutexLockScanner) valueContainsLockOp(expr ast.Expr) bool {
+	found := false
+	ast.Inspect(expr, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		switch n := n.(type) {
+		case *ast.FuncLit:
+			found = s.containsLockOp(n.Body)
+			return false
+		case *ast.Ident:
+			binding := s.bindings[n]
+			if binding != nil && !s.seen[binding] {
+				s.seen[binding] = true
+				found = slices.ContainsFunc(binding.values, s.valueContainsLockOp)
 			}
 		}
 		return !found

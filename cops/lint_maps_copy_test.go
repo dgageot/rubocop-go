@@ -1,6 +1,7 @@
 package cops
 
 import (
+	"fmt"
 	"go/ast"
 	"go/importer"
 	"go/parser"
@@ -136,9 +137,113 @@ func TestMapsCopyRejectsUnsupportedMapConstraints(t *testing.T) {
 			pkg, err := cfg.Check("fixture", fset, []*ast.File{file}, nil)
 			require.NoError(t, err)
 			sig := pkg.Scope().Lookup("f").Type().(*types.Signature)
-			assert.Nil(t, mapsCopyMapType(sig.Params().At(0).Type()))
+			assert.Nil(t, mapsCopyMapType(sig.Params().At(0).Type(), make(map[types.Type]*types.Map)))
 		})
 	}
+}
+
+// mapsCopyCountedType counts graph visits without relying on elapsed time.
+type mapsCopyCountedType struct {
+	types.Type
+
+	t      *testing.T
+	visits int
+}
+
+func (typ *mapsCopyCountedType) Underlying() types.Type {
+	typ.t.Helper()
+	typ.visits++
+	require.Equal(typ.t, 1, typ.visits, "each node must be resolved once")
+	return typ.Type.Underlying()
+}
+
+func TestMapsCopyConstraintDAG(t *testing.T) {
+	t.Parallel()
+	for _, supported := range []bool{true, false} {
+		name := "unsupported"
+		if supported {
+			name = "supported"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var nodes []*mapsCopyCountedType
+			wrap := func(typ types.Type) types.Type {
+				node := &mapsCopyCountedType{Type: typ, t: t}
+				nodes = append(nodes, node)
+				return node
+			}
+			shape := types.NewMap(types.Typ[types.String], types.Typ[types.Int])
+			var base types.Type = shape
+			if !supported {
+				base = types.NewSlice(types.Typ[types.Int])
+			}
+			left, right := wrap(base), wrap(base)
+			for range 64 {
+				branch := func() types.Type {
+					union := wrap(types.NewUnion([]*types.Term{
+						types.NewTerm(false, left), types.NewTerm(false, right),
+					}))
+					return wrap(types.NewInterfaceType(nil, []types.Type{union}))
+				}
+				left, right = branch(), branch()
+			}
+			memo := make(map[types.Type]*types.Map)
+			for range 100 {
+				for _, root := range []types.Type{left, right} {
+					got := mapsCopyConstraintMap(root, memo)
+					if supported {
+						require.Same(t, shape, got)
+					} else {
+						require.Nil(t, got)
+					}
+				}
+			}
+			// Resolve even nodes skipped by an unsupported branch, twice each.
+			for _, node := range nodes {
+				mapsCopyConstraintMap(node, memo)
+				mapsCopyConstraintMap(node, memo)
+				require.Equal(t, 1, node.visits, "each node must be resolved once")
+			}
+			require.Len(t, memo, len(nodes), "cache size must be linear in graph size")
+		})
+	}
+}
+
+func TestMapsCopyConstraintCycles(t *testing.T) {
+	t.Parallel()
+	left, right := &mapsCopyCountedType{t: t}, &mapsCopyCountedType{t: t}
+	left.Type = types.NewInterfaceType(nil, []types.Type{right})
+	right.Type = types.NewInterfaceType(nil, []types.Type{left})
+	shape := types.NewMap(types.Typ[types.String], types.Typ[types.Int])
+	root := types.NewUnion([]*types.Term{types.NewTerm(false, shape), types.NewTerm(false, left)})
+	memo := make(map[types.Type]*types.Map)
+	for range 2 {
+		require.Nil(t, mapsCopyConstraintMap(root, memo))
+		require.Nil(t, mapsCopyConstraintMap(left, memo))
+		require.Nil(t, mapsCopyConstraintMap(right, memo))
+	}
+	require.Equal(t, 1, left.visits)
+	require.Equal(t, 1, right.visits)
+	require.Len(t, memo, 4)
+}
+
+func TestMapsCopyGenericDAG(t *testing.T) {
+	t.Parallel()
+	var src strings.Builder
+	src.WriteString("package p\ntype A0 = interface { ~map[string]int }; type B0 = interface { ~map[string]int }\n")
+	for i := 1; i <= 18; i++ {
+		fmt.Fprintf(&src, "type A%d = interface { A%d | B%d }; type B%d = interface { A%d | B%d }\n", i, i-1, i-1, i, i-1, i-1)
+	}
+	src.WriteString("func f[D A18, S B18](dst D, src S) {\n")
+	for range 100 {
+		src.WriteString("for k, v := range src { dst[k] = v }\n")
+	}
+	src.WriteString("}\nfunc g[D B18, S A18](dst D, src S) {\n")
+	for range 100 {
+		src.WriteString("for k, v := range src { dst[k] = v }\n")
+	}
+	src.WriteString("}\n")
+	require.Len(t, runExtractedTypedCop(t, newMapsCopyFile(), src.String()), 200)
 }
 
 func TestMapsCopyConfiguration(t *testing.T) {

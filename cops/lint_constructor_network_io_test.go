@@ -137,6 +137,20 @@ func NewClient(ctx context.Context, dialer *net.Dialer) error {
 			want: []string{"net.Dial"},
 		},
 		{
+			name: "listen config methods aliases and promotions",
+			src: `import ("context"; network "net")
+type Config = network.ListenConfig
+type Wrapped struct { *Config }
+func NewClient(ctx context.Context, config *Config, wrapped Wrapped) error {
+	_, err := config.Listen(ctx, "tcp", ":0")
+	_, _ = config.ListenPacket(ctx, "udp", ":0")
+	_, _ = wrapped.Listen(ctx, "tcp", ":0")
+	_, _ = (*network.ListenConfig).ListenPacket(config, ctx, "udp", ":0")
+	return err
+}`,
+			want: []string{"net.Listen", "net.ListenPacket", "net.Listen", "net.ListenPacket"},
+		},
+		{
 			name: "HTTP client methods and promoted methods",
 			src: `import "net/http"
 type Client struct { *http.Client }

@@ -142,7 +142,8 @@ no project-specific directory exclusions are built in.
   IIFEs and inline range functions, not side effects hidden in helpers. Unevaluated `unsafe` operands
   are excluded. Intentionally lazy closures are excluded.
 - **ConstructorNetworkIO:** move `net.Dial(...)` from a constructor to an explicit
-  operation. Covers selected `net`/`net/http` APIs, not every network method.
+  operation. Covers selected `net`/`net/http` APIs, including `net.ListenConfig`
+  listeners, not every network method.
   Goroutine bodies are excluded, but their synchronously evaluated receivers and
   arguments are checked. Network I/O and background work in constructors can be intentional; opt in
   only when this matches your lifecycle policy.

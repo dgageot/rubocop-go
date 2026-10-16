@@ -6,6 +6,8 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -557,6 +559,8 @@ func TestStreamCloseSafetyGoDeferEvaluation(t *testing.T) {
 			want       int
 		}{
 			{"earlier argument may follow synchronous unlock", `consumeTwo(s.done, s.release())`, 1},
+			{"converted argument may follow synchronous unlock", `consumeTwo(bool(s.done), s.release())`, 1},
+			{"wrapped converted argument precedes synchronous unlock", `consumeTwo(identity(bool(s.done)), s.release())`, 0},
 			{"argument field read is synchronous", `consume(s.done)`, 0},
 			{"argument helper is synchronous", `consume(s.read())`, 0},
 			{"argument IIFE is synchronous", `consume(func() bool { return s.done }())`, 0},
@@ -576,6 +580,7 @@ type other struct{}
 func (*other) read() {}
 func consume(bool) {}
 func consumeTwo(bool, bool) {}
+func identity(b bool) bool { return b }
 func (s *stream) read() bool { return s.done }
 func (s stream) valueRead() bool { return s.done }
 func (s *stream) self(bool) *other { return nil }
@@ -731,6 +736,148 @@ type stream struct { done atomic.Bool }
 func (s stream) copy() bool { return true }
 func (s *stream) Next() bool { `+tc.next+` }
 func (s *stream) Close() { `+tc.close+` }
+`)
+			NewLintStreamCloseSafety().Check(p)
+			assert.Len(t, p.Offenses(), tc.want, "%+v", p.Offenses())
+		})
+	}
+}
+
+func TestStreamCloseSafetyGenericReceivers(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, src string
+		want      int
+	}{
+		{"uninstantiated parameter", `type stream[T any] struct { value T }
+func (s *stream[T]) Next() T { return s.value }
+func (s *stream[T]) Close() { var zero T; s.value = zero }`, 1},
+		{"renamed receiver parameters", `type stream[Value any] struct { value Value }
+func (s *stream[Read]) Next() Read { return s.value }
+func (s *stream[Write]) Close() { var zero Write; s.value = zero }`, 1},
+		{"multiple renamed receiver parameters", `type stream[A, B any] struct { first A; second B }
+func (s *stream[B, A]) Next() A { return s.second }
+func (s *stream[X, Y]) Close() { var zero Y; s.second = zero }`, 1},
+		{"named generic field", `type state[T any] struct { value T }
+type stream[T any] struct { state state[T] }
+func (s *stream[Read]) Next() Read { return s.state.value }
+func (s *stream[Write]) Close() { s.state = state[Write]{} }`, 1},
+		{"renamed generic helper", `type stream[T any] struct { value T }
+func (s *stream[Helper]) read() Helper { return s.value }
+func (s *stream[Read]) Next() Read { return s.read() }
+func (s *stream[Write]) Close() { var zero Write; s.value = zero }`, 1},
+		{"promoted generic helper", `type base[T any] struct { value T }
+func (s *base[Helper]) reset() { var zero Helper; s.value = zero }
+type stream[T any] struct { base[T] }
+func (s *stream[Read]) Next() Read { return s.value }
+func (s *stream[Write]) Close() { s.reset() }`, 1},
+		{"promoted generic entry", `type base[T any] struct { value T }
+func (s *base[Read]) Next() Read { return s.value }
+func (s *base[Write]) Close() { var zero Write; s.value = zero }
+type stream[T any] struct { *base[T] }`, 1},
+		{"generic receiver copy", `type stream[T any] struct { value T }
+func (s stream[Read]) Next() bool { return true }
+func (s *stream[Write]) Close() { var zero Write; s.value = zero }`, 1},
+		{"generic pointer slot reset", `type stream[T any] struct { value *T }
+func (s *stream[Read]) Next() Read { return *s.value }
+func (s *stream[Write]) Close() { s.value = nil }`, 1},
+		{"generic pointee write does not write pointer slot", `type stream[T any] struct { value *T }
+func (s *stream[Read]) Next() *Read { return s.value }
+func (s *stream[Write]) Close() { var zero Write; *s.value = zero }`, 0},
+		{"generic pointee access", `type stream[T any] struct { value *T }
+func (s *stream[Read]) Next() Read { return *s.value }
+func (s *stream[Write]) Close() { var zero Write; *s.value = zero }`, 1},
+		{"generic shared mutex", `import "sync"
+type stream[T any] struct { mu sync.Mutex; value T }
+func (s *stream[Read]) Next() Read { s.mu.Lock(); defer s.mu.Unlock(); return s.value }
+func (s *stream[Write]) Close() { s.mu.Lock(); defer s.mu.Unlock(); var zero Write; s.value = zero }`, 0},
+		{"constrained parameter", `type stream[T ~int] struct { value T }
+func (s *stream[Read]) Next() Read { return s.value }
+func (s *stream[Write]) Close() { s.value = 0 }`, 1},
+		{"generic sizeof does not release", `import ("sync"; "unsafe")
+type stream[T any] struct { mu sync.Mutex; value T }
+func (s *stream[V]) release() V { s.mu.Unlock(); var zero V; return zero }
+func (s *stream[Read]) Next() Read { s.mu.Lock(); _ = unsafe.Sizeof(s.release()); return s.value }
+func (s *stream[Write]) Close() { s.mu.Lock(); defer s.mu.Unlock(); var zero Write; s.value = zero }`, 0},
+		{"dot imported generic alignof does not release", `import ("sync"; . "unsafe")
+type stream[T any] struct { mu sync.Mutex; value T }
+func (s *stream[V]) release() V { s.mu.Unlock(); var zero V; return zero }
+func (s *stream[Read]) Next() Read { s.mu.Lock(); _ = Alignof(s.release()); return s.value }
+func (s *stream[Write]) Close() { s.mu.Lock(); defer s.mu.Unlock(); var zero Write; s.value = zero }`, 0},
+		{"generic atomic pointer", `import "sync/atomic"
+type stream[T any] struct { value atomic.Pointer[T] }
+func (s *stream[Read]) Next() *Read { return s.value.Load() }
+func (s *stream[Write]) Close() { s.value.Store(nil) }`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := streamCloseTestPass(t, "package p\n"+tc.src)
+			NewLintStreamCloseSafety().Check(p)
+			assert.Len(t, p.Offenses(), tc.want, "%+v", p.Offenses())
+		})
+	}
+}
+
+func TestStreamCloseSafetyLoadedGeneric(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module streamtest\n\ngo 1.26.1\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "stream.go"), []byte(`package streamtest
+type Stream[Value any] struct { value Value }
+func (s *Stream[Read]) Next() Read { return s.value }
+func (s *Stream[Write]) Close() { var zero Write; s.value = zero }
+`), 0o600))
+	program, err := prog.LoadDir(dir, ".")
+	require.NoError(t, err)
+	c := NewLintStreamCloseSafety()
+	p := &prog.Pass{Cop: c, Program: program}
+	c.Check(p)
+	assert.Len(t, p.Offenses(), 1)
+}
+
+func TestStreamCloseSafetyConversionOrdering(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, body string
+		want       int
+	}{
+		{"bool conversion", `consume(bool(s.done), s.release())`, 1},
+		{"named conversion", `consume(flag(s.done), s.release())`, 1},
+		{"alias conversion", `consume(alias(s.done), s.release())`, 1},
+		{"interface conversion", `consume(any(s.done), s.release())`, 1},
+		{"parenthesized conversion", `consume((bool)(s.done), s.release())`, 1},
+		{"nested conversion", `consume(bool(flag(s.done)), s.release())`, 1},
+		{"conversion before IIFE release", `consume(bool(s.done), func() bool { s.mu.Unlock(); return true }())`, 1},
+		{"converted RHS", `_, _ = bool(s.done), s.release()`, 1},
+		{"slice length builtin", `consume(len(s.data), s.release())`, 1},
+		{"slice capacity builtin", `consume(cap(s.data), s.release())`, 1},
+		{"append builtin", `consume(append([]bool{}, s.done), s.release())`, 1},
+		{"complex builtin", `consume(complex(s.number, 0), s.release())`, 1},
+		{"min builtin", `consume(min(s.number, 0), s.release())`, 1},
+		{"real wrapper call", `consume(identity(s.done), s.release())`, 0},
+		{"shadowed builtin is real call", `len := identity; consume(len(s.done), s.release())`, 0},
+		{"shadowed type is real call", `bool := identity; consume(bool(s.done), s.release())`, 0},
+		{"wrapper around conversion", `consume(identity(bool(s.done)), s.release())`, 0},
+		{"conversion around wrapper", `consume(bool(identity(s.done)), s.release())`, 0},
+		{"wrapper in builtin", `consume(append([]bool{}, identity(s.done)), s.release())`, 0},
+		{"conversion argument releases", `consume(bool(s.release()), s.done)`, 1},
+		{"builtin argument releases", `consume(append([]bool{}, s.release()), s.done)`, 1},
+		{"constant array length is not a read", `consume(len(s.array), s.release())`, 0},
+		{"constant sizeof does not evaluate argument", `consume(unsafe.Sizeof(s.release()), s.done)`, 0},
+		{"constant sizeof does not read field", `consume(unsafe.Sizeof(s.done), s.release())`, 0},
+		{"unevaluated sizeof release is not pending", `consume(s.done, unsafe.Sizeof(s.release()))`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := streamCloseTestPass(t, `package p
+import ("sync"; "unsafe")
+var _ = unsafe.Sizeof(0)
+type flag bool
+type alias = bool
+type stream struct { mu sync.Mutex; done bool; data []byte; number float64; array [2]bool }
+func consume(any, any) {}
+func identity(b bool) bool { return b }
+func (s *stream) release() bool { s.mu.Unlock(); return true }
+func (s *stream) Next() bool { s.mu.Lock(); `+tc.body+`; return true }
+func (s *stream) Close() { s.mu.Lock(); defer s.mu.Unlock(); s.done = true; s.data = nil; s.number = 1; s.array = [2]bool{} }
 `)
 			NewLintStreamCloseSafety().Check(p)
 			assert.Len(t, p.Offenses(), tc.want, "%+v", p.Offenses())
