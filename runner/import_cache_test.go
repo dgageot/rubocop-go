@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/tools/go/packages"
 )
 
 func TestImportResolverSharesModuleGraph(t *testing.T) {
@@ -248,4 +249,34 @@ func TestImportResolverRelativeGoenv(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestImportResolverSharesDespiteInactivePlatformImports(t *testing.T) {
+	isolateImportEnvironment(t)
+	dir := t.TempDir()
+	files := importFixture(t, dir, map[string]string{
+		"go.mod":               "module example.test\ngo 1.26\n",
+		"a/a.go":               "package a\nimport \"net/url\"\nvar _ url.URL\n",
+		"b/b.go":               "package b\nimport \"net/http\"\nvar _ http.Request\n",
+		"inactive/inactive.go": "//go:build lint_disabled_fixture\n\npackage inactive\nimport _ \"example.test/disabled\"\n",
+		"disabled/disabled.go": "//go:build lint_disabled_fixture\n\npackage disabled\ntype Value int\n",
+	})
+	r := newImportResolver(files)
+	a := r.resolve(filepath.Join(dir, "a"), nil)
+	b := r.resolve(filepath.Join(dir, "b"), nil)
+	require.Same(t, a, b)
+	url, err := a.Import("net/url")
+	require.NoError(t, err)
+	http, err := b.Import("net/http")
+	require.NoError(t, err)
+	assert.Contains(t, http.Imports(), url)
+	_, err = a.Import("example.test/disabled")
+	require.Error(t, err)
+	assert.False(t, r.failed[r.contexts[filepath.Join(dir, "a")]])
+}
+
+func TestBuildExcludedPackageRequiresNoFiles(t *testing.T) {
+	loadError := packages.Error{Msg: "build constraints exclude all Go files in /example"}
+	assert.True(t, buildExcludedPackage(&packages.Package{Errors: []packages.Error{loadError}}))
+	assert.False(t, buildExcludedPackage(&packages.Package{GoFiles: []string{"example.go"}, Errors: []packages.Error{loadError}}))
 }
