@@ -32,9 +32,9 @@ var LintOsExit = cop.New(cop.Meta{
 
 ### Shared opt-in cops
 
-36 additional cops are available through named constructors for context usage,
+42 additional cops are available through named constructors for context usage,
 logging, library output, errors, constructor lifecycles, stream synchronization,
-and Go modernization.
+channel safety, and Go modernization.
 They are deliberately **not** included in `All()` or `AllProgram()`.
 See the [shared cop catalog](docs/shared-cops.md) for brief descriptions,
 examples, minimum Go versions, and limitations.
