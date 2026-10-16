@@ -29,6 +29,7 @@ import (
 	"go/types"
 	"slices"
 	"strings"
+	"sync"
 
 	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/packages"
@@ -40,7 +41,7 @@ import (
 //
 // A Program is expensive to build (it type-checks the initial packages and
 // lowers them to SSA), so the runner builds it once and shares it across
-// every whole-program cop.
+// every whole-program cop. A Program must not be copied after first use.
 type Program struct {
 	// Fset is the shared position table for every loaded file.
 	Fset *token.FileSet
@@ -58,6 +59,10 @@ type Program struct {
 	CallGraph *callgraph.Graph
 	// allFunctions caches [AllFunctions].
 	allFunctions []*ssa.Function
+
+	packagesWithTestsOnce sync.Once
+	packagesWithTests     []*packages.Package
+	packagesWithTestsErr  error
 }
 
 // loadMode requests everything a whole-program analysis needs for the
@@ -137,6 +142,30 @@ func LoadDir(dir string, patterns ...string) (*Program, error) {
 		CallGraph:    buildCallGraph(ssaFns),
 		allFunctions: ssaFns,
 	}, nil
+}
+
+// PackagesWithTests lazily loads initial packages and their test variants without
+// building SSA. Results, including load errors, are cached from the first call;
+// load a new Program to observe source or environment changes.
+// Returned packages are read-only; callers decide how to handle package errors.
+func (p *Program) PackagesWithTests() ([]*packages.Package, error) {
+	p.packagesWithTestsOnce.Do(func() {
+		var dirs []string
+		seen := make(map[string]bool)
+		for _, pkg := range p.Packages {
+			if pkg.Dir != "" && !seen[pkg.Dir] {
+				dirs = append(dirs, pkg.Dir)
+				seen[pkg.Dir] = true
+			}
+		}
+		if len(dirs) == 0 {
+			return
+		}
+		p.packagesWithTests, p.packagesWithTestsErr = packages.Load(&packages.Config{
+			Mode: loadMode, Dir: dirs[0], Fset: p.Fset, Tests: true,
+		}, dirs...)
+	})
+	return p.packagesWithTests, p.packagesWithTestsErr
 }
 
 func buildCallGraph(fns []*ssa.Function) *callgraph.Graph {
