@@ -185,3 +185,67 @@ func TestImportResolverBatchFailureRetainsLocalImports(t *testing.T) {
 	assert.NotNil(t, pkg.Scope().Lookup("Value"))
 	assert.True(t, r.failed[r.contexts[filepath.Join(dir, "a")]])
 }
+
+func TestImportResolverFallsBackForImportCycles(t *testing.T) {
+	isolateImportEnvironment(t)
+	dir := t.TempDir()
+	files := importFixture(t, dir, map[string]string{
+		"go.mod":             "module example.test\ngo 1.26\n",
+		"a/a.go":             "package a\nimport \"example.test/cycle1\"\nvar _ cycle1.Value\n",
+		"b/b.go":             "package b\nimport \"example.test/cycle2\"\nvar _ cycle2.Value\n",
+		"c/c.go":             "package c\nimport \"example.test/healthy\"\nvar _ healthy.Value\n",
+		"cycle1/cycle.go":    "package cycle1\nimport _ \"example.test/cycle2\"\ntype Value int\n",
+		"cycle2/cycle.go":    "package cycle2\nimport _ \"example.test/cycle1\"\ntype Value int\n",
+		"healthy/healthy.go": "package healthy\ntype Value int\n",
+	})
+	resolver := newImportResolver(files)
+	for _, name := range []string{"cycle1", "cycle2", "healthy"} {
+		consumer := map[string]string{"cycle1": "a", "cycle2": "b", "healthy": "c"}[name]
+		path := filepath.Join(dir, consumer, consumer+".go")
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		require.NoError(t, err)
+		local := resolveImports(filepath.Dir(path), []*ast.File{file})
+		shared := resolver.resolve(filepath.Dir(path), []*ast.File{file})
+		_, wantErr := local.Import("example.test/" + name)
+		pkg, gotErr := shared.Import("example.test/" + name)
+		assert.Equal(t, wantErr == nil, gotErr == nil, name)
+		if gotErr == nil {
+			assert.NotNil(t, pkg.Scope().Lookup("Value"))
+		}
+	}
+	assert.True(t, resolver.failed[resolver.contexts[filepath.Join(dir, "a")]])
+}
+
+func TestImportResolverRelativeGoenv(t *testing.T) {
+	isolateImportEnvironment(t)
+	dir := t.TempDir()
+	t.Chdir(dir)
+	files := importFixture(t, dir, map[string]string{
+		"go.mod":        "module example.test\ngo 1.26\n",
+		"a/a.go":        "package a\nimport \"example.test/lib\"\nvar _ lib.First\n",
+		"b/b.go":        "package b\nimport \"example.test/lib\"\nvar _ lib.Second\n",
+		"a/local.goenv": "GOFLAGS=-tags=first\n",
+		"b/local.goenv": "GOFLAGS=-tags=second\n",
+		"lib/first.go":  "//go:build first\n\npackage lib\ntype First int\n",
+		"lib/second.go": "//go:build second\n\npackage lib\ntype Second int\n",
+	})
+	t.Setenv("GOENV", "local.goenv")
+	for _, order := range [][]string{{"a", "b"}, {"b", "a"}} {
+		resolver := newImportResolver(files)
+		assert.Empty(t, resolver.contexts)
+		for _, name := range order {
+			path := filepath.Join(dir, name, name+".go")
+			file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+			require.NoError(t, err)
+			pkg, err := resolver.resolve(filepath.Dir(path), []*ast.File{file}).Import("example.test/lib")
+			require.NoError(t, err)
+			if name == "a" {
+				assert.NotNil(t, pkg.Scope().Lookup("First"))
+				assert.Nil(t, pkg.Scope().Lookup("Second"))
+			} else {
+				assert.NotNil(t, pkg.Scope().Lookup("Second"))
+				assert.Nil(t, pkg.Scope().Lookup("First"))
+			}
+		}
+	}
+}

@@ -51,12 +51,15 @@ func loadImports(dir string, patterns []string) (types.Importer, bool) {
 		return fallback, false
 	}
 	resolved := make(map[string]*types.Package)
+	complete := true
 	for _, pkg := range loaded {
 		if len(pkg.Errors) == 0 && pkg.Types != nil && pkg.Types.Complete() {
 			resolved[pkg.PkgPath] = pkg.Types
+		} else {
+			complete = false
 		}
 	}
-	return &resolvedImporter{packages: resolved, fallback: fallback}, true
+	return &resolvedImporter{packages: resolved, fallback: fallback}, complete
 }
 
 type resolvedImporter struct {
@@ -103,6 +106,10 @@ func newImportResolver(files []string) *importResolver {
 }
 
 func canShareImports() bool {
+	// Relative GOENV files can select different settings in sibling directories.
+	if env := os.Getenv("GOENV"); env != "" && env != "off" && !filepath.IsAbs(env) {
+		return false
+	}
 	if driver := os.Getenv("GOPACKAGESDRIVER"); driver != "" && driver != "off" {
 		return false
 	}
