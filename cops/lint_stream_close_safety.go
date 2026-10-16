@@ -279,6 +279,9 @@ func (a *streamCloseAnalysis) releasedLocks(fn *types.Func, prefix string, visit
 }
 
 func (s *streamMethodScan) releaseCalls(node ast.Node, released map[string]bool, visiting map[*types.Func]bool) {
+	if node == nil {
+		return
+	}
 	ast.Inspect(node, func(n ast.Node) bool {
 		switch v := n.(type) {
 		case *ast.FuncLit:
