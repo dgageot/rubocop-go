@@ -16,10 +16,9 @@ func NewLintFmtPrint() *cop.Func {
 		Severity:    cop.Warning,
 	}, func(p *cop.Pass) {
 		p.ForEachCall(func(call *ast.CallExpr) {
-			if cop.IsCallTo(call, "fmt", "Print", "Println", "Printf") {
-				sel := call.Fun.(*ast.SelectorExpr)
-				p.Reportf(call, "fmt.%s in library code — use a logger instead", sel.Sel.Name)
+			if name, match := standardLibraryCall(p, call, "fmt", "Print", "Println", "Printf"); match {
+				p.Reportf(call, "fmt.%s in library code — use a logger instead", name)
 			}
 		})
-	}, cop.WithScope(func(p *cop.Pass) bool { return !p.IsMain() }))
+	}, cop.WithTypes(), cop.WithScope(func(p *cop.Pass) bool { return !p.IsMain() }))
 }
