@@ -42,6 +42,12 @@ The catalog descriptions match each cop's `Meta.Description`.
 | `Lint/WaitGroupGo` | Consider WaitGroup.Go for simple Add/go/Done patterns. | 1.25+ |
 | `Lint/HTTPTestRequestWithContext` | Use httptest.NewRequestWithContext for immediate test-request context attachment. | 1.23+ |
 | `Lint/StreamCloseSafety` | Flag potentially unsynchronized field access between Close and Next/Recv. | — |
+| `Lint/CancellationLoop` | Leave polling loops after context cancellation. | — |
+| `Lint/ClosedChannelLoop` | Stop polling a channel after observing closure. | — |
+| `Lint/ChannelStateCheck` | Do not use channel length or capacity checks to justify blocking operations. | — |
+| `Lint/CancellationSafeResultSend` | Do not strand result senders when callers return on cancellation. | — |
+| `Lint/NonblockingChannelReplacement` | Keep channel replacement fallbacks nonblocking. | — |
+| `Lint/SlicesConcat` | Consider slices.Concat for concatenating slices into fresh storage. | 1.22+ |
 
 ## Embedding
 
@@ -69,6 +75,12 @@ programCops := []prog.Cop{
     cops.NewLintSortStableFunc(),
     cops.NewLintBenchmarkLoop(),
     cops.NewLintStreamCloseSafety(),
+    cops.NewLintCancellationLoop(),
+    cops.NewLintClosedChannelLoop(),
+    cops.NewLintChannelStateCheck(),
+    cops.NewLintCancellationSafeResultSend(),
+    cops.NewLintNonblockingChannelReplacement(),
+    cops.NewLintSlicesConcat(),
 }
 r := runner.New(fileCops, config.DefaultConfig(), os.Stdout).
     WithProgramCops(programCops)
@@ -190,6 +202,46 @@ no project-specific directory exclusions are built in.
   invalidate held-lock assumptions. Only receiver-method helpers with
   loaded bodies are followed; test-only implementations are not loaded.
 
+### Channel safety
+
+These five cops use resolved types and skip generated files. `CancellationLoop`,
+`ClosedChannelLoop`, and `ChannelStateCheck` also inspect internal/external tests
+and test-only packages, retaining usable partial types from test packages.
+Production packages must still load through the shared SSA loader.
+`CancellationSafeResultSend` and `NonblockingChannelReplacement` inspect
+production packages only. They are
+local pattern checks, not proofs of deadlock or race freedom, and do not rewrite code.
+
+- **CancellationLoop:** a `case <-ctx.Done(): break` inside `for { select { ... } }`
+  only exits the select. Return or break the enclosing loop instead. Flags paths
+  that can revisit the same select after cancellation, including fallthrough and
+  `continue`. Conditional loops, context aliases, helper side effects, and custom
+  cancellation protocols are not proved.
+- **ClosedChannelLoop:** after `value, ok := <-ch`, leave the loop or disable/replace
+  the channel when `!ok`. Tracks simple closure tests through local control flow
+  in unconditional loops, including labelled exits. Receives without explicit
+  closure tests, channel aliases, and arbitrary helper effects are excluded.
+- **ChannelStateCheck:** `if len(ch) > 0 { <-ch }` and
+  `if len(ch) < cap(ch) { ch <- value }` do not reserve a value or capacity. Prefer
+  `select` or explicit synchronization. Matching covers local guards and resolved
+  storage expressions, not channel aliases or indexed containers. Nonblocking
+  select communications are excluded. The cop does not prove locks or exclusive
+  ownership; intentionally synchronized or private queues may need suppression.
+- **CancellationSafeResultSend:** a goroutine sending on an unbuffered result
+  channel can be stranded when its sole receiver returns on context cancellation.
+  Select on matching cancellation or use a buffered one-shot result. Recognizes
+  straight-line setup, one inline producer, simple aliases, context copies, and
+  `WithValue`. Every returning cancellation arm must be covered by the producer.
+  Escaped channels/contexts, extra receivers, unresolved context constructors,
+  and buffered channels are excluded. Buffering is not sufficient for an arbitrary
+  stream; the cop does not prove that a producer will finish other work.
+- **NonblockingChannelReplacement:** a failed nonblocking send followed by a
+  blocking drain and resend can block if another consumer empties the queue.
+  Keep both fallback operations nonblocking. Matches adjacent operations on the
+  same local or stable field channel, excluding effectful send expressions and
+  indexed channels. It does not prove competing consumers or exclusive access,
+  and only matches the fully blocking fallback, not partially repaired variants.
+
 ### Modernization
 
 - **NewExpr:** `v := value; return &v` → `return new(value)`. Requires adjacent
@@ -258,6 +310,15 @@ no project-specific directory exclusions are built in.
   Includes production, internal tests, external tests, and test-only packages;
   generated code is excluded. Explicit capacity and effectful repeated sources
   are not matched.
+- **SlicesConcat:** nested or adjacent appends into fresh storage, such as
+  `append(append([]T(nil), a...), b...)`, suggest `slices.Concat(a, b)`.
+  Requires Go 1.22+. Skips in-place appends, scalar tails, mixed named slice
+  types, and inputs with calls or other side effects. Includes fresh nil/empty
+  slices, zero-length `make`, and `slices.Clone` seeds. Preserve nil versus
+  non-nil empty results, named destination types, capacity assumptions, and
+  allocation/panic behavior; `Concat` returns nil for an empty result. Production
+  packages only; generated files are excluded. Suggestions can overlap with
+  `SlicesClone` and are never automatic rewrites.
 - **SortStableFunc:** simple `sort.SliceStable` callbacks comparing integer or
   string keys → `slices.SortStableFunc` with `cmp.Compare`. Reverse arguments for
   descending keys and preserve lazy tie-break evaluation; eagerly computing all

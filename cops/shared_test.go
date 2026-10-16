@@ -31,6 +31,8 @@ func TestSharedCopMetadata(t *testing.T) {
 		NewLintPointerHelper(), NewLintReflectFields(), NewLintStdlibUUID(), NewLintURLClone(),
 		NewLintJSONMarshalWrite(), NewLintBenchmarkLoop(), NewLintSplitTrimJoin(), NewLintFieldsSeq(), NewLintStreamCloseSafety(),
 		NewLintMapsCopy(), NewLintMapsClone(), NewLintSlicesContains(), NewLintSlicesEqual(), NewLintSplitSeq(), NewLintSortedMapKeys(), NewLintWaitGroupGo(), NewLintHTTPTestRequestWithContext(), NewLintErrorsAsType(), NewLintConstructorCommandExec(), NewLintCutPrefix(), NewLintCutSuffix(), NewLintFieldsSeqLookup(), NewLintSlicesClone(), NewLintSortStableFunc(),
+		NewLintCancellationLoop(), NewLintClosedChannelLoop(), NewLintChannelStateCheck(),
+		NewLintCancellationSafeResultSend(), NewLintNonblockingChannelReplacement(), NewLintSlicesConcat(),
 	}
 	doc, err := os.ReadFile("../docs/shared-cops.md")
 	require.NoError(t, err)
@@ -50,7 +52,7 @@ func TestSharedCopMetadata(t *testing.T) {
 	for _, c := range programCops {
 		check(c.Name(), c.Description())
 	}
-	assert.Len(t, names, 36)
+	assert.Len(t, names, 42)
 	for _, c := range All() {
 		assert.False(t, names[c.Name()], "shared cops are explicitly selected, not enabled by default")
 	}
@@ -87,6 +89,7 @@ func TestModernizationMinimumVersions(t *testing.T) {
 		{"suffix", "go1.20", "p.go", cutSuffixFixture, newCutSuffixFile},
 		{"lookup", "go1.24", "p.go", fieldsSeqLookupFixture, newFieldsSeqLookupFile},
 		{"clone", "go1.21", "p.go", slicesCloneFixture, newSlicesCloneFile},
+		{"concat", "go1.22", "p.go", "package p\nfunc f(a, b []int) []int { return append(append([]int(nil), a...), b...) }", newSlicesConcatFile},
 		{"sort", "go1.21", "p.go", sortStableFuncFixture, newSortStableFuncFile},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
