@@ -94,6 +94,7 @@ func TestErrorsAsTypeSourceRestrictions(t *testing.T) {
 		{"pointer to interface target", "error", "*error", "", 0},
 		{"generic unknown source", "T", "*E", "", 0},
 		{"generic direct match", "T", "T", "", 1},
+		{"generic interface match", "T", "error", "", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			src := strings.Replace(errorsAsTypeFixture, "err *E", "err "+tc.source, 1)
@@ -257,4 +258,103 @@ func TestErrorsAsTypeRetainsHealthyPackagesWithBrokenTests(t *testing.T) {
 	})
 	require.Len(t, offenses, 1)
 	assert.Equal(t, "Lint/ErrorsAsType", offenses[0].CopName)
+}
+
+func TestErrorsAsTypeCompositeTypeParameters(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, field string
+	}{
+		{"direct", "T"},
+		{"pointer", "*T"},
+		{"slice", "[]T"},
+		{"array", "[1]T"},
+		{"map key", "map[T]int"},
+		{"map value", "map[int]T"},
+		{"channel", "chan T"},
+		{"function argument", "func(T)"},
+		{"function result", "func() T"},
+		{"interface method", "interface{ Value() T }"},
+		{"nested struct", "struct{ Value T }"},
+		{"named generic", "Box[T]"},
+		{"generic alias", "Alias[T]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			generic := "struct{ error; X " + tc.field + " }"
+			for _, pair := range [][2]string{{generic, "Named"}, {"Named", generic}, {generic, generic}} {
+				src := `package p
+import "errors"
+type Box[T any] struct{ Value T }
+type Alias[T any] = []T
+type Named struct{ error; X ` + strings.ReplaceAll(tc.field, "T", "int") + ` }
+func f[T comparable](err ` + pair[0] + `) {
+ var e ` + pair[1] + `
+ if errors.As(err, &e) { println(e.X) }
+}
+`
+				want := 0
+				if pair[0] == pair[1] {
+					want = 1
+				}
+				require.Len(t, runExtractedTypedCop(t, newErrorsAsTypeFile(), src), want)
+			}
+		})
+	}
+}
+
+type errorsAsTypeCompositeNamedError struct {
+	error
+
+	X int
+}
+
+type errorsAsTypeCompositeError[T any] = struct {
+	error
+
+	X T
+}
+
+func errorsAsTypeCompositeSource[T any](source errorsAsTypeCompositeError[T]) (errorsAsTypeCompositeNamedError, bool) {
+	var target errorsAsTypeCompositeNamedError
+	ok := errors.As(source, &target)
+	return target, ok
+}
+
+func errorsAsTypeCompositeTarget[T any](source errorsAsTypeCompositeNamedError) (errorsAsTypeCompositeError[T], bool) {
+	var target errorsAsTypeCompositeError[T]
+	ok := errors.As(source, &target)
+	return target, ok
+}
+
+func TestErrorsAsTypeCompositeGenericAssignability(t *testing.T) {
+	t.Parallel()
+	source := errorsAsTypeCompositeError[int]{errors.New("source"), 42}
+	target, ok := errorsAsTypeCompositeSource(source)
+	require.True(t, ok)
+	assert.Equal(t, source.X, target.X)
+	_, ok = errors.AsType[errorsAsTypeCompositeNamedError](source)
+	assert.False(t, ok, "a generic composite source may be reflect-assignable but fail a type assertion")
+
+	original, ok := errorsAsTypeCompositeTarget[int](target)
+	require.True(t, ok)
+	assert.Equal(t, source.X, original.X)
+	_, ok = errors.AsType[errorsAsTypeCompositeError[int]](target)
+	assert.False(t, ok, "a generic composite target may be reflect-assignable but fail a type assertion")
+}
+
+func TestErrorsAsTypeConcreteRecursiveTypes(t *testing.T) {
+	t.Parallel()
+	for _, source := range []string{"*Node", "*Box[int]"} {
+		src := `package p
+import "errors"
+type E struct{}
+func (*E) Error() string { return "e" }
+type Node struct{ next *Node }
+func (*Node) Error() string { return "node" }
+type Box[T any] struct{ next *Box[T]; Value T }
+func (*Box[T]) Error() string { return "box" }
+func f(err ` + source + `) { var e *E; if errors.As(err, &e) { println(e) } }
+`
+		require.Len(t, runExtractedTypedCop(t, newErrorsAsTypeFile(), src), 1)
+	}
 }

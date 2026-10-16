@@ -54,6 +54,7 @@ func TestConstructorNetworkIOExecutionBoundaries(t *testing.T) {
 		want int
 	}{
 		{"New", `func New() any { return http.Get("https://example.test") }`, 1},
+		{"Unicode constructor", `func NewÉ() any { return http.Get("https://example.test") }`, 1},
 		{"named result", `func NewClient() (client any) { http.Get("https://example.test"); return }`, 1},
 		{"non constructor", `func Connect() { http.Get("https://example.test") }`, 0},
 		{"lowercase suffix", `func Newest() any { return http.Get("https://example.test") }`, 0},
@@ -65,6 +66,11 @@ func TestConstructorNetworkIOExecutionBoundaries(t *testing.T) {
 		{"callback", `func NewClient() any { return register(func() { http.Get("https://example.test") }) }`, 0},
 		{"immediate closure", `func NewClient() any { func() { http.Get("https://example.test") }(); return nil }`, 1},
 		{"parenthesized immediate closure", `func NewClient() any { (func() { http.Get("https://example.test") })(); return nil }`, 1},
+		{"converted immediate closure", `func NewClient() any { (func())(func() { http.Get("https://example.test") })(); return nil }`, 1},
+		{"converted deferred closure", `func NewClient() any { defer (func())(func() { http.Get("https://example.test") })(); return nil }`, 1},
+		{"converted returned closure", `func NewClient() any { return (func())(func() { http.Get("https://example.test") }) }`, 0},
+		{"converted asynchronous closure", `func NewClient() any { go (func())(func() { http.Get("https://example.test") })(); return nil }`, 0},
+		{"range function", `func NewClient() any { for range func(yield func() bool) { http.Get("https://example.test") } {}; return nil }`, 1},
 		{"nested immediate closures", `func NewClient() any { func() { func() { http.Get("https://example.test") }() }(); return nil }`, 1},
 		{"stored closure inside immediate closure", `func NewClient() any { func() { _ = func() { http.Get("https://example.test") } }(); return nil }`, 0},
 		{"deferred closure", `func NewClient() any { defer func() { http.Get("https://example.test") }(); return nil }`, 1},
@@ -131,6 +137,56 @@ func NewClient(ctx context.Context, dialer *net.Dialer) error {
 			want: []string{"net.Dial"},
 		},
 		{
+			name: "listen config methods aliases and promotions",
+			src: `import ("context"; network "net")
+type Config = network.ListenConfig
+type Wrapped struct { *Config }
+func NewClient(ctx context.Context, config *Config, wrapped Wrapped) error {
+	_, err := config.Listen(ctx, "tcp", ":0")
+	_, _ = config.ListenPacket(ctx, "udp", ":0")
+	_, _ = wrapped.Listen(ctx, "tcp", ":0")
+	_, _ = (*network.ListenConfig).ListenPacket(config, ctx, "udp", ":0")
+	return err
+}`,
+			want: []string{"net.Listen", "net.ListenPacket", "net.Listen", "net.ListenPacket"},
+		},
+		{
+			name: "HTTP client methods and promoted methods",
+			src: `import "net/http"
+type Client struct { *http.Client }
+func NewClient(client Client) error {
+	_, err := client.Get("https://example.test")
+	_, _ = (*http.Client).Head(client.Client, "https://example.test")
+	return err
+}`,
+			want: []string{"http.Get", "http.Head"},
+		},
+		{
+			name: "HTTP headers are not network requests",
+			src: `import "net/http"
+func NewClient(header http.Header) string {
+	_ = header.Get("Content-Type")
+	return http.Header.Get(header, "Content-Type")
+}`,
+		},
+		{
+			name: "resolved shadowing never falls back to syntax",
+			src: `type local struct{}
+func (local) Get(string) string { return "offline" }
+func (local) Dial(string, string) int { return 0 }
+func NewClient(http, net local) string { _ = net.Dial("tcp", "offline"); return http.Get("Content-Type") }`,
+		},
+		{
+			name: "parenthesized package and resolver calls",
+			src: `import ("context"; "net"; "net/http")
+func NewClient(r *net.Resolver) error {
+	_, err := (http.Get)("https://example.test")
+	_, _ = (r.LookupHost)(context.Background(), "example.test")
+	return err
+}`,
+			want: []string{"http.Get", "net.LookupHost"},
+		},
+		{
 			name: "Do and Accept are out of scope",
 			src: `import ("net"; "net/http")
 func NewClient(client *http.Client, request *http.Request, listener net.Listener) error {
@@ -166,6 +222,31 @@ func NewClient() local { c := local{}; c.Dial(); c.LookupHost(); c.Get(); return
 			for i, want := range tc.want {
 				assert.Contains(t, offenses[i].Message, "constructor NewClient calls "+want+";")
 			}
+		})
+	}
+}
+
+func TestConstructorNetworkIOTypedExecution(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, src string
+		want      int
+	}{
+		{"size", `import "unsafe"; func New() uintptr { return unsafe.Sizeof(func() int { http.Get("https://example.test"); return 0 }()) }`, 0},
+		{"alignment", `import "unsafe"; func New() uintptr { return unsafe.Alignof(func() int { http.Get("https://example.test"); return 0 }()) }`, 0},
+		{"offset", `import "unsafe"; func New() uintptr { return unsafe.Offsetof(func() struct{ X int } { http.Get("https://example.test"); return struct{ X int }{} }().X) }`, 0},
+		{"generic size", `import u "unsafe"; func New[T any]() uintptr { return u.Sizeof(func() T { http.Get("https://example.test"); var x T; return x }()) }`, 0},
+		{"generic alignment", `import . "unsafe"; func New[T any]() uintptr { return Alignof(func() T { http.Get("https://example.test"); var x T; return x }()) }`, 0},
+		{"shadowed unsafe", `type local struct{}; func (local) Sizeof(int) int { return 0 }; func New(unsafe local) int { return unsafe.Sizeof(func() int { http.Get("https://example.test"); return 0 }()) }`, 1},
+		{"named immediate conversion", `type Action func(); func New() int { Action(func() { http.Get("https://example.test") })(); return 0 }`, 1},
+		{"named deferred conversion", `type Action func(); func New() int { defer Action(func() { http.Get("https://example.test") })(); return 0 }`, 1},
+		{"named asynchronous conversion", `type Action func(); func New() int { go Action(func() { http.Get("https://example.test") })(); return 0 }`, 0},
+		{"callback factory", `func wrap(f func()) func() { return f }; func New() int { wrap(func() { http.Get("https://example.test") })(); return 0 }`, 0},
+		{"converted range", `type Iterator func(func() bool); func New() int { for range Iterator(func(yield func() bool) { http.Get("https://example.test") }) {}; return 0 }`, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "package p\nimport \"net/http\"\n" + tc.src
+			assert.Len(t, runExtractedTypedCop(t, NewLintConstructorNetworkIO(), src), tc.want)
 		})
 	}
 }

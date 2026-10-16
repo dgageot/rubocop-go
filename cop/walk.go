@@ -226,7 +226,7 @@ func ForEachStructIn(file *ast.File, fn func(*ast.TypeSpec, *ast.StructType)) {
 			if !ok {
 				continue
 			}
-			st, ok := ts.Type.(*ast.StructType)
+			st, ok := ast.Unparen(ts.Type).(*ast.StructType)
 			if !ok {
 				continue
 			}

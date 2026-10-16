@@ -18,6 +18,8 @@ func TestConstructorPurityConstructorSignatures(t *testing.T) {
 		want int
 	}{
 		{"New", `func New() int { go work(); return 0 }`, 1},
+		{"New followed by Unicode uppercase", `func NewÉ() int { go work(); return 0 }`, 1},
+		{"Unicode lowercase suffix", `func Newé() int { go work(); return 0 }`, 0},
 		{"New followed by uppercase", `func NewClient() *Client { go work(); return nil }`, 1},
 		{"named result", `func NewClient() (client *Client) { go work(); return }`, 1},
 		{"multiple results", `func NewClient() (*Client, error) { go work(); return nil, nil }`, 1},
@@ -60,6 +62,12 @@ func TestConstructorPurityExecutionBoundaries(t *testing.T) {
 		{"indirect helper", `startWorker(); return 0`, 0},
 		{"immediate closure", `func() { go work() }(); return 0`, 1},
 		{"parenthesized immediate closure", `(func() { go work() })(); return 0`, 1},
+		{"converted immediate closure", `(func())(func() { go work() })(); return 0`, 1},
+		{"converted deferred closure", `defer (func())(func() { go work() })(); return 0`, 1},
+		{"converted stored closure", `return (func())(func() { go work() })`, 0},
+		{"converted goroutine closure", `go (func())(func() { go work() })(); return 0`, 1},
+		{"inline range function", `for range func(yield func() bool) { go work() } {}; return 0`, 1},
+		{"converted range function", `for range (func(func() bool))(func(yield func() bool) { go work() }) {}; return 0`, 1},
 		{"nested immediate closures", `func() { func() { go work() }() }(); return 0`, 1},
 		{"stored closure inside immediate closure", `func() { _ = func() { go work() } }(); return 0`, 0},
 		{"immediate argument to immediate closure", `func(int) {}(func() int { go work(); return 0 }()); return 0`, 1},
@@ -94,5 +102,42 @@ func NewClient() int {
 	for _, offense := range offenses {
 		assert.Contains(t, offense.Message, "constructor NewClient starts a goroutine")
 		assert.Contains(t, offense.Message, "Start/Run")
+	}
+}
+
+func TestConstructorPurityTypedExecution(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, src string
+		want      int
+	}{
+		{"size", `import "unsafe"; func New() uintptr { return unsafe.Sizeof(func() int { go work(); return 0 }()) }`, 0},
+		{"alignment", `import "unsafe"; func New() uintptr { return unsafe.Alignof(func() int { go work(); return 0 }()) }`, 0},
+		{"offset", `import "unsafe"; func New() uintptr { return unsafe.Offsetof(func() struct{ X int } { go work(); return struct{ X int }{} }().X) }`, 0},
+		{"generic size", `import u "unsafe"; func New[T any]() uintptr { return u.Sizeof(func() T { go work(); var x T; return x }()) }`, 0},
+		{"generic alignment", `import . "unsafe"; func New[T any]() uintptr { return Alignof(func() T { go work(); var x T; return x }()) }`, 0},
+		{"shadowed unsafe", `type local struct{}; func (local) Sizeof(int) int { return 0 }; func New(unsafe local) int { return unsafe.Sizeof(func() int { go work(); return 0 }()) }`, 1},
+		{"named conversion", `type Action func(); func New() int { Action(func() { go work() })(); return 0 }`, 1},
+		{"nested conversion", `type Action func(); func New() int { (func())(Action(func() { go work() }))(); return 0 }`, 1},
+		{"named deferred conversion", `type Action func(); func New() int { defer Action(func() { go work() })(); return 0 }`, 1},
+		{"named lazy conversion", `type Action func(); func New() Action { return Action(func() { go work() }) }`, 0},
+		{"callback factory", `func wrap(f func()) func() { return f }; func New() int { wrap(func() { go work() })(); return 0 }`, 0},
+		{"named iterator conversion", `type Iterator func(func() bool); func New() int { for range Iterator(func(yield func() bool) { go work() }) {}; return 0 }`, 1},
+		{"stored iterator", `func New() any { return func(yield func() bool) { go work() } }`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "package p\n" + tc.src + "\nfunc work() {}"
+			assert.Len(t, runExtractedTypedCop(t, NewLintConstructorPurity(), src), tc.want)
+		})
+	}
+}
+
+func TestConstructorPurityUnevaluatedWithoutTypes(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"Sizeof", "Alignof", "Offsetof"} {
+		t.Run(name, func(t *testing.T) {
+			src := "package p\nfunc New() uintptr { return (unsafe." + name + ")(func() int { go work(); return 0 }()) }"
+			assert.Empty(t, coptest.Run(t, NewLintConstructorPurity(), src))
+		})
 	}
 }

@@ -82,7 +82,8 @@ func checkReflectFields(p *cop.Pass, fn *ast.FuncType, body *ast.BlockStmt) {
 			return valid
 		})
 		if valid {
-			p.Reportf(loop, "use range %s.Fields() for paired metadata and values; preserve declaration order, continue behavior, and early stopping", receiver.Name)
+			// Fields reports invalid/non-struct values differently from NumField.
+			p.Reportf(loop, "use _ = %s.NumField() followed by range %s.Fields() for paired metadata and values; preserve declaration order, continue behavior, and early stopping", receiver.Name, receiver.Name)
 		}
 		return true
 	})

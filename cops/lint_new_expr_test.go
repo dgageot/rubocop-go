@@ -51,6 +51,10 @@ func TestNewExpr(t *testing.T) {
 		{"following constant", `const ok = true; func f() (*int, bool) { v := 42; return &v, ok }`},
 		{"shadowed local", `func f(v int) *int { { v := v + 1; return &v } }`},
 		{"unrelated new shadow", `func f() *int { { new := 1; _ = new }; v := 42; return &v }`},
+		{"unrelated selector in block", `func f() *int { { new := struct{ X int }{1}; _ = new.X }; v := 42; return &v }`},
+		{"unrelated parenthesized selector", `func f() *int { { new := struct{ X int }{1}; _ = (new).X }; v := 42; return &v }`},
+		{"unrelated selector in function", `func other() { new := struct{ X int }{1}; _ = new.X }; func f() *int { v := 42; return &v }`},
+		{"unrelated selector in closure", `var other = func() { new := struct{ X int }{1}; _ = new.X }; func f() *int { v := 42; return &v }`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -129,6 +133,7 @@ func TestNewExprRunner(t *testing.T) {
 		"go.mod": "module fixture\n\ngo 1.26\n",
 		"copy.go": `package p
 import "time"
+func unrelated() { new := struct{ X int }{1}; _ = new.X }
 func copyTime(t time.Time) *time.Time {
 	v := t
 	return &v

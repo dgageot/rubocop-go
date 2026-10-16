@@ -21,23 +21,31 @@ func NewLintStdlibUUID(opts ...cop.FuncOption) *prog.Func {
 		Meta: fileCop.Meta,
 		Run: func(p *prog.Pass) {
 			candidates := &prog.Pass{Cop: p.Cop, Program: p.Program}
-			prog.FromFile(fileCop).Check(candidates)
+			var hasRandom bool
+			candidateCop := *fileCop
+			candidateCop.Run = func(p *cop.Pass) {
+				hasRandom = checkStdlibUUID(p, true) || hasRandom
+			}
+			prog.FromFile(&candidateCop).Check(candidates)
 			if len(candidates.Offenses()) == 0 {
 				return
 			}
-			pkgs, err := loadUUIDPackages(p)
-			if err != nil {
-				p.Reportf(token.NoPos, "cannot check UUID randomness: %v", err)
-			} else if !uuidRandomnessConfigured(pkgs) {
-				for _, offense := range candidates.Offenses() {
-					p.ReportOffense(offense)
+			if hasRandom {
+				pkgs, err := loadUUIDPackages(p)
+				if err != nil {
+					p.Reportf(token.NoPos, "cannot check UUID randomness: %v", err)
 				}
-				return
+				if err != nil || uuidRandomnessConfigured(pkgs) {
+					// Parsing canonical literals does not depend on the random source.
+					literals := *fileCop
+					literals.Run = func(p *cop.Pass) { checkStdlibUUID(p, false) }
+					prog.FromFile(&literals).Check(p)
+					return
+				}
 			}
-			// Parsing canonical literals does not depend on the random source.
-			literals := *fileCop
-			literals.Run = func(p *cop.Pass) { checkStdlibUUID(p, false) }
-			prog.FromFile(&literals).Check(p)
+			for _, offense := range candidates.Offenses() {
+				p.ReportOffense(offense)
+			}
 		},
 	}
 }
@@ -55,43 +63,63 @@ func newStdlibUUIDFile(opts ...cop.FuncOption) *cop.Func {
 	}, opts...)
 }
 
-func checkStdlibUUID(p *cop.Pass, randomSafe bool) {
+// The result records random candidates so literal-only checks need no dependency load.
+func checkStdlibUUID(p *cop.Pass, randomSafe bool) (hasRandom bool) {
 	if p.Info == nil || ast.IsGenerated(p.File) {
-		return
+		return false
 	}
-	p.ForEachCall(func(call *ast.CallExpr) {
+	ast.PreorderStack(p.File, nil, func(node ast.Node, stack []ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
 		fn, ok := calleeObject(p.Info, call).(*types.Func)
 		if !ok || fn.Pkg() == nil || fn.Pkg().Path() != "github.com/google/uuid" {
-			return
+			return true
 		}
 		switch fn.Name() {
 		case "NewString":
 			if !randomSafe {
-				return
+				return true
 			}
+			parent := len(stack) - 1
+			for parent >= 0 {
+				if _, ok := stack[parent].(*ast.ParenExpr); !ok {
+					break
+				}
+				parent--
+			}
+			if parent >= 0 {
+				switch stack[parent].(type) {
+				case *ast.GoStmt, *ast.DeferStmt:
+					return true // NewV4 would generate the UUID before the deferred or async call.
+				}
+			}
+			hasRandom = true
 			p.Report(call, "prefer uuid.NewV4().String() from the standard library unless custom Google UUID randomness is required; do not change configured random sources")
 		case "String":
-			selector, ok := call.Fun.(*ast.SelectorExpr)
+			selector, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
 			if !ok {
-				return
+				return true
 			}
 			inner, ok := ast.Unparen(selector.X).(*ast.CallExpr)
 			if !ok {
-				return
+				return true
 			}
 			source, ok := calleeObject(p.Info, inner).(*types.Func)
 			if !ok || source.Pkg() == nil || source.Pkg().Path() != "github.com/google/uuid" {
-				return
+				return true
 			}
 			switch source.Name() {
 			case "New":
 				if !randomSafe {
-					return
+					return true
 				}
+				hasRandom = true
 				p.Report(call, "prefer uuid.NewV4().String() from the standard library; preserve random UUIDv4 string semantics")
 			case "MustParse":
 				if len(inner.Args) != 1 {
-					return
+					return true
 				}
 				value := p.Info.Types[inner.Args[0]].Value
 				if value != nil && value.Kind() == constant.String && canonicalUUID(constant.StringVal(value)) {
@@ -99,7 +127,9 @@ func checkStdlibUUID(p *cop.Pass, randomSafe bool) {
 				}
 			}
 		}
+		return true
 	})
+	return hasRandom
 }
 
 // UUID randomness can be configured by imported packages and by test-only imports.

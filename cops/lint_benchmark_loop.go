@@ -22,7 +22,6 @@ func NewLintBenchmarkLoop(opts ...cop.FuncOption) *prog.Func {
 			pkgs, err := loadModernizationTests(p)
 			if err != nil {
 				p.Reportf(token.NoPos, "cannot inspect benchmark tests: %v", err)
-				return
 			}
 			seen := make(map[string]bool)
 			for _, pkg := range pkgs {
@@ -30,7 +29,7 @@ func NewLintBenchmarkLoop(opts ...cop.FuncOption) *prog.Func {
 					continue
 				}
 				for _, file := range pkg.Syntax {
-					filename := p.Program.Fset.Position(file.Pos()).Filename
+					filename := p.Program.Fset.PositionFor(file.Package, false).Filename
 					if seen[filename] || !strings.HasSuffix(filename, "_test.go") {
 						continue
 					}

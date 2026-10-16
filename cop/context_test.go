@@ -27,8 +27,17 @@ func TestWalkFuncWithContextScope(t *testing.T) {
 		want []bool
 	}{
 		{"parameter", `func f(ctx context.Context) { mark(); }`, []bool{true}},
+		{"parenthesized parameter", `func f(ctx (context.Context)) { mark(); }`, []bool{true}},
+		{"parenthesized local", `func f() { var ctx (context.Context); mark(); _ = ctx }`, []bool{true}},
+		{"parenthesized producer", `func f() { ctx := ((context.Background())); mark(); _ = ctx }`, []bool{true}},
+		{"parenthesized callee", `func f() { ctx := (context.Background)(); mark(); _ = ctx }`, []bool{true}},
+		{"cause is not a context", `func f() { err := context.Cause(context.Background()); mark(); _ = err }`, []bool{false}},
+		{"after func is not a context", `func f() { stop := context.AfterFunc(context.Background(), func() { mark() }); mark(); _ = stop }`, []bool{false, false}},
+		{"nonidentifier receiver", `func f() { ctx := requests[0].Context(); mark(); _ = ctx }`, []bool{true}},
+		{"unnamed closure captures context", `func f(ctx context.Context) { _ = func(context.Context) { mark() } }`, []bool{true}},
+		{"blank closure captures context", `func f(ctx context.Context) { _ = func(_ context.Context) { mark() } }`, []bool{true}},
 		{"blank parameter", `func f(_ context.Context) { mark(); }`, []bool{false}},
-		{"anonymous parameter", `func f(context.Context) { mark(); }`, []bool{true}},
+		{"anonymous parameter", `func f(context.Context) { mark(); }`, []bool{false}},
 		{"named result", `func f() (ctx context.Context) { mark(); return }`, []bool{true}},
 		{"unnamed result", `func f() context.Context { mark(); return nil }`, []bool{false}},
 		{"closure unnamed result", `func f() { _ = func() context.Context { mark(); return nil } }`, []bool{false}},
@@ -125,7 +134,7 @@ func TestContextSyntacticHelpers(t *testing.T) {
 	}
 	assert.False(t, cop.BodyDeclaresContext(nil))
 	fn := contextFunction(t, `func f(context.Context) {}`)
-	assert.True(t, cop.SignatureHasContext(fn.Type))
+	assert.False(t, cop.SignatureHasContext(fn.Type))
 	unnamedResult := contextFunction(t, `func f() context.Context { return nil }`)
 	assert.False(t, cop.SignatureHasContext(unnamedResult.Type))
 	cop.WalkFuncWithContextScope(fn.Type, nil, false, func(ast.Node, bool) bool {
@@ -136,4 +145,63 @@ func TestContextSyntacticHelpers(t *testing.T) {
 		assert.True(t, hasContext)
 		return true
 	})
+}
+
+func TestContextProducers(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		expr string
+		want bool
+	}{
+		{"context.Background()", true},
+		{"context.TODO()", true},
+		{"context.WithCancel(ctx)", true},
+		{"context.WithCancelCause(ctx)", true},
+		{"context.WithDeadline(ctx, deadline)", true},
+		{"context.WithDeadlineCause(ctx, deadline, cause)", true},
+		{"context.WithTimeout(ctx, timeout)", true},
+		{"context.WithTimeoutCause(ctx, timeout, cause)", true},
+		{"context.WithValue(ctx, key, value)", true},
+		{"context.WithoutCancel(ctx)", true},
+		{"context.Cause(ctx)", false},
+		{"context.AfterFunc(ctx, callback)", false},
+		{"context.Canceled", false},
+		{"context.Custom()", false},
+		{"request.Context()", true},
+		{"server.request.Context()", true},
+		{"requests[0].Context()", true},
+		{"getRequest().Context()", true},
+		{"(request).Context()", true},
+		{"(getRequest().Context)()", true},
+		{"((context.Background()))", true},
+		{"(context.Background)()", true},
+		{"request.Context(value)", false},
+		{"request", false},
+	} {
+		t.Run(tc.expr, func(t *testing.T) {
+			expr, err := parser.ParseExpr(tc.expr)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, cop.IsContextProducer(expr))
+		})
+	}
+}
+
+func TestContextSignatureBindings(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		src  string
+		want bool
+	}{
+		{`func f(ctx context.Context) {}`, true},
+		{`func f(ctx (context.Context)) {}`, true},
+		{`func f(_ context.Context) {}`, false},
+		{`func f(context.Context) {}`, false},
+		{`func f() (ctx context.Context) { return }`, true},
+		{`func f() (_ context.Context) { return nil }`, false},
+		{`func f() context.Context { return nil }`, false},
+	} {
+		fn := contextFunction(t, tc.src)
+		assert.Equal(t, tc.want, cop.SignatureHasContext(fn.Type), tc.src)
+	}
+	assert.False(t, cop.SignatureHasContext(nil))
 }

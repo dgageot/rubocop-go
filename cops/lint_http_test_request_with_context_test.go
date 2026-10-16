@@ -214,3 +214,53 @@ func TestHTTPTestRequestWithContextPreservesPanics(t *testing.T) {
 		})
 	}
 }
+
+func TestHTTPTestRequestWithContextExecutionTiming(t *testing.T) {
+	t.Parallel()
+	const request = `httptest.NewRequest("BAD METHOD", "/", nil).WithContext(ctx)`
+	for _, tc := range []struct {
+		name, body string
+		want       int
+	}{
+		{"direct", "_ = " + request, 1},
+		{"defer", "defer " + request, 0},
+		{"go", "go " + request, 0},
+		{"parenthesized defer", `defer (httptest.NewRequest("BAD METHOD", "/", nil).WithContext)(ctx)`, 0},
+		{"parenthesized go", `go (httptest.NewRequest("BAD METHOD", "/", nil).WithContext)(ctx)`, 0},
+		{"deferred argument", "defer consume(" + request + ")", 1},
+		{"goroutine argument", "go consume(" + request + ")", 1},
+		{"deferred closure", "defer func() { _ = " + request + " }()", 1},
+		{"goroutine closure", "go func() { _ = " + request + " }()", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := `package p
+import ("context"; "net/http"; "net/http/httptest")
+func consume(*http.Request) {}
+func f(ctx context.Context) { ` + tc.body + ` }`
+			assert.Len(t, runExtractedTypedCop(t, newHTTPTestRequestWithContextFile(), src), tc.want)
+		})
+	}
+}
+
+func TestHTTPTestRequestWithContextDeferredValidation(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	original := func() (continued bool, panicValue any) {
+		defer func() { panicValue = recover() }()
+		defer httptest.NewRequest("BAD METHOD", "/", nil).WithContext(ctx) //nolint:gocritic // Exercise the nil-body pattern matched by the cop.
+		continued = true
+		return continued, panicValue
+	}
+	modernized := func() (continued bool, panicValue any) {
+		defer func() { panicValue = recover() }()
+		defer httptest.NewRequestWithContext(ctx, "BAD METHOD", "/", nil)
+		continued = true
+		return continued, panicValue
+	}
+	originalContinued, originalPanic := original()
+	modernizedContinued, modernizedPanic := modernized()
+	assert.False(t, originalContinued, "request construction must panic before the next statement")
+	assert.True(t, modernizedContinued, "a direct rewrite incorrectly delays request construction")
+	require.NotNil(t, originalPanic)
+	assert.Equal(t, originalPanic, modernizedPanic)
+}

@@ -45,6 +45,14 @@ func TestSlogContextualContextSources(t *testing.T) {
 		{"request context", `func f(req *http.Request) { ctx := req.Context(); slog.Info("message"); _ = ctx }`, 1},
 		{"no context", `func f() { slog.Info("message") }`, 0},
 		{"blank parameter", `func f(_ context.Context) { slog.Info("message") }`, 0},
+		{"unnamed parameter", `func f(context.Context) { slog.Info("message") }`, 0},
+		{"parenthesized parameter", `func f(ctx (context.Context)) { slog.Info("message") }`, 1},
+		{"parenthesized producer", `func f() { ctx := ((context.Background)()); slog.Info("message"); _ = ctx }`, 1},
+		{"parenthesized log callee", `func f(ctx context.Context) { (slog.Info)("message") }`, 1},
+		{"nonidentifier receiver", `func f(reqs []*http.Request) { ctx := reqs[0].Context(); slog.Info("message"); _ = ctx }`, 1},
+		{"call receiver", `func f(req func() *http.Request) { ctx := req().Context(); slog.Info("message"); _ = ctx }`, 1},
+		{"cause result", `func f() { err := context.Cause(context.Background()); slog.Info("message"); _ = err }`, 0},
+		{"afterfunc result", `func f() { stop := context.AfterFunc(context.Background(), func() { slog.Info("callback") }); slog.Info("message"); stop() }`, 0},
 		{"discarded context", `func f() { _, cancel := context.WithCancel(context.Background()); defer cancel(); slog.Info("message") }`, 0},
 		{"contextual helpers", `func f(ctx context.Context) {
 	slog.DebugContext(ctx, "message"); slog.InfoContext(ctx, "message")
@@ -175,6 +183,29 @@ func TestSharedAdvisoryFactoriesScopesAndFreshInstances(t *testing.T) {
 			assert.Empty(t, coptest.RunNamed(t, scoped, "pkg/other/client.go", src))
 			assert.Empty(t, coptest.RunNamed(t, scoped, "pkg/client/client_test.go", src))
 			require.Len(t, coptest.RunNamed(t, fresh, "pkg/other/client_test.go", src), 1)
+		})
+	}
+}
+
+func TestSlogContextualPackageLevelClosures(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, src string
+		want      int
+	}{
+		{"parameter", `var callback = func(ctx context.Context) { slog.Info("message") }`, 1},
+		{"local", `var callback = func() { ctx := context.Background(); slog.Info("message"); _ = ctx }`, 1},
+		{"initializer", `var value = func() int { ctx := context.Background(); slog.Info("message"); _ = ctx; return 1 }()`, 1},
+		{"composite literal", `var callbacks = []func(context.Context){func(ctx context.Context) { slog.Info("message") }}`, 1},
+		{"nested capture", `var callback = func(ctx context.Context) { _ = func() { slog.Info("message") } }`, 1},
+		{"nested shadow", `var callback = func(ctx context.Context) { _ = func(ctx int) { slog.Info("message") } }`, 0},
+		{"unnamed", `var callback = func(context.Context) { slog.Info("message") }`, 0},
+		{"unrelated global context", `var ctx = context.Background(); var callback = func() { slog.Info("message") }`, 0},
+		{"siblings", `var first = func(ctx context.Context) { slog.Info("first") }; var second = func() { slog.Info("second") }`, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "package p\nimport (\"context\"; \"log/slog\")\n" + tc.src
+			assert.Len(t, coptest.Run(t, NewLintSlogContextual(), src), tc.want)
 		})
 	}
 }

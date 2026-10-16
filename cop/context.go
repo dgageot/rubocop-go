@@ -11,32 +11,33 @@ import (
 // or dot-import that re-exports context.Context under a different name
 // will not match. In practice the standard import path is always used.
 func IsContextType(expr ast.Expr) bool {
-	pkg, sel, ok := MatchSelector(expr)
+	pkg, sel, ok := MatchSelector(ast.Unparen(expr))
 	return ok && pkg == "context" && sel == "Context"
 }
 
-// IsContextProducer reports whether expr is a call whose shape commonly
-// yields a context.Context: any call into the `context` package, or any
-// zero-arg method named `Context` (the cobra / http.Request convention).
-//
-// Like [IsContextType] this is syntactic — false positives are possible
-// for unrelated zero-arg `.Context()` methods, but they are rare in
-// practice and the cost of being wrong is one spurious "you have a ctx"
-// hint, never a missed offense in a context-aware rule.
+// IsContextProducer reports whether expr calls a standard context constructor
+// or a zero-argument Context method (the cobra / http.Request convention).
+// This is syntactic: unrelated Context methods can also match.
 func IsContextProducer(expr ast.Expr) bool {
-	call, ok := expr.(*ast.CallExpr)
+	call, ok := ast.Unparen(expr).(*ast.CallExpr)
 	if !ok {
 		return false
 	}
-	pkg, sel, ok := MatchSelector(call.Fun)
-	return ok && (pkg == "context" || (sel == "Context" && len(call.Args) == 0))
+	if _, ok := CallTo(call, "context", "Background", "TODO", "WithCancel", "WithCancelCause",
+		"WithDeadline", "WithDeadlineCause", "WithTimeout", "WithTimeoutCause", "WithValue", "WithoutCancel"); ok {
+		return true
+	}
+	selector, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+	return ok && selector.Sel.Name == "Context" && len(call.Args) == 0
 }
 
-// SignatureHasContext reports whether typ declares any parameter or named
-// result of type context.Context. An anonymous parameter (e.g.
-// `func(context.Context)`) still counts as declaring a context in scope —
-// callers that pass a value satisfy the signature regardless of the name.
+// SignatureHasContext reports whether typ declares any accessible parameter
+// or named result of type context.Context. Blank and unnamed fields do not
+// provide a usable context binding.
 func SignatureHasContext(typ *ast.FuncType) bool {
+	if typ == nil {
+		return false
+	}
 	for _, fl := range []*ast.FieldList{typ.Params, typ.Results} {
 		if fl == nil {
 			continue
@@ -44,9 +45,6 @@ func SignatureHasContext(typ *ast.FuncType) bool {
 		for _, f := range fl.List {
 			if !IsContextType(f.Type) {
 				continue
-			}
-			if len(f.Names) == 0 && fl == typ.Params {
-				return true
 			}
 			for _, n := range f.Names {
 				if isNamedIdent(n) {
@@ -142,9 +140,6 @@ func (s *contextScope) signature(typ *ast.FuncType) {
 		}
 		for _, field := range fields.List {
 			context := IsContextType(field.Type)
-			if len(field.Names) == 0 && context && fields == typ.Params {
-				s.anonymous = true
-			}
 			for _, name := range field.Names {
 				s.bind(name.Name, context)
 			}

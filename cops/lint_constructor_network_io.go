@@ -17,11 +17,11 @@ import (
 //
 // Detection is intentionally low-noise: only calls to selected functions and
 // methods in net and net/http are flagged (net.Dial*/Listen*/Lookup*,
-// Resolver.Lookup*, http.Get/Head/Post/PostForm). Method calls such as .Do
+// Resolver.Lookup*, ListenConfig.Listen/ListenPacket, http.Get/Head/Post/PostForm). Method calls such as .Do
 // and .Accept are out of scope for now.
 //
 // Calls inside nested function literals are ignored unless the literal is
-// immediately invoked as part of constructor execution.
+// invoked directly or used as an inline range function during construction.
 //
 // Annotate an intentional case with //rubocop:disable Lint/ConstructorNetworkIO.
 func NewLintConstructorNetworkIO(opts ...cop.FuncOption) *cop.Func {
@@ -37,7 +37,7 @@ func NewLintConstructorNetworkIO(opts ...cop.FuncOption) *cop.Func {
 				if !isConstructor(fn) || fn.Body == nil {
 					return
 				}
-				forEachConstructionCallExpr(fn.Body, func(call *ast.CallExpr) {
+				forEachTypedConstructionCall(p.Info, fn.Body, func(call *ast.CallExpr) {
 					pkg, name, ok := networkIOCall(p, call)
 					if !ok {
 						return
@@ -52,8 +52,8 @@ func NewLintConstructorNetworkIO(opts ...cop.FuncOption) *cop.Func {
 }
 
 func networkIOCall(p *cop.Pass, call *ast.CallExpr) (string, string, bool) {
-	if pkg, name, ok := networkIOFuncName(calleeObject(p.Info, call)); ok {
-		return pkg, name, true
+	if obj := calleeObject(p.Info, call); obj != nil {
+		return networkIOFuncName(obj)
 	}
 
 	if name, ok := cop.CallTo(call, "net", netIOFuncNames...); ok {
@@ -84,14 +84,26 @@ func networkIOFuncName(obj types.Object) (string, string, bool) {
 		return "", "", false
 	}
 	name := fn.Name()
+	recv := fn.Signature().Recv()
+	receiverName := ""
+	if recv != nil {
+		t := recv.Type()
+		if ptr, ok := t.(*types.Pointer); ok {
+			t = ptr.Elem()
+		}
+		if named, ok := t.(*types.Named); ok {
+			receiverName = named.Obj().Name()
+		}
+	}
 	switch pkg.Path() {
 	case "net":
-		// Matches both package functions and *net.Resolver methods
-		// (e.g. net.DefaultResolver.LookupIPAddr).
-		if slices.Contains(netIOFuncNames, name) {
+		if (recv == nil || receiverName == "Resolver" || receiverName == "Dialer" || receiverName == "ListenConfig") && slices.Contains(netIOFuncNames, name) {
 			return "net", name, true
 		}
 	case "net/http":
+		if recv != nil && receiverName != "Client" {
+			return "", "", false
+		}
 		switch name {
 		case "Get", "Head", "Post", "PostForm":
 			return "http", name, true

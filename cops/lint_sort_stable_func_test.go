@@ -1,7 +1,11 @@
 package cops
 
 import (
+	"cmp"
 	"path/filepath"
+	"slices"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -129,4 +133,48 @@ func f(xs []int) { sort.SliceStable(xs, func(i, j int) bool { return xs[i] < xs[
 		assert.Contains(t, filepath.ToSlash(offense.Pos.Filename), "/pkg/config/")
 	}
 	assert.Empty(t, coptest.Run(t, newSortStableFuncFile(), src), "missing type information must not report")
+}
+
+func TestSortStableFuncExecutionTiming(t *testing.T) {
+	t.Parallel()
+	const sortCall = `sort.SliceStable(xs, func(i, j int) bool { return xs[i] < xs[j] })`
+	for _, tc := range []struct {
+		name, body string
+		want       int
+	}{
+		{"direct", sortCall, 1},
+		{"defer", "defer " + sortCall + "; xs = []int{0, 1}", 0},
+		{"go", "go " + sortCall + "; xs = []int{0, 1}", 0},
+		{"parenthesized defer", "defer " + strings.Replace(sortCall, "sort.SliceStable", "(sort.SliceStable)", 1), 0},
+		{"parenthesized go", "go " + strings.Replace(sortCall, "sort.SliceStable", "(sort.SliceStable)", 1), 0},
+		{"deferred closure", "defer func() { " + sortCall + " }()", 1},
+		{"goroutine closure", "go func() { " + sortCall + " }()", 1},
+		{"deferred argument", "defer func(any) {}(func() any { " + sortCall + "; return nil }())", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := `package p; import "sort"; func f(xs []int) { ` + tc.body + ` }`
+			assert.Len(t, runExtractedTypedCop(t, newSortStableFuncFile(), src), tc.want)
+		})
+	}
+}
+
+func TestSortStableFuncDeferredCapture(t *testing.T) {
+	t.Parallel()
+	original := func() (result []int) {
+		xs := []int{2, 1}
+		result = xs
+		defer sort.SliceStable(xs, func(i, j int) bool { return xs[i] < xs[j] })
+		xs = []int{0, 1}
+		return result
+	}
+	modernized := func() (result []int) {
+		xs := []int{2, 1}
+		result = xs
+		defer slices.SortStableFunc(xs, cmp.Compare[int])
+		xs = []int{0, 1}
+		assert.Equal(t, []int{0, 1}, xs)
+		return result
+	}
+	assert.Equal(t, []int{2, 1}, original())
+	assert.Equal(t, []int{1, 2}, modernized())
 }

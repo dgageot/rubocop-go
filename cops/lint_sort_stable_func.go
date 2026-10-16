@@ -29,34 +29,46 @@ func newSortStableFuncFile(opts ...cop.FuncOption) *cop.Func {
 			if p.Info == nil || p.IsTestFile() || ast.IsGenerated(p.File) {
 				return
 			}
-			p.ForEachCall(func(call *ast.CallExpr) {
+			ast.PreorderStack(p.File, nil, func(node ast.Node, stack []ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				// Only direct calls are delayed; calls within arguments still run now.
+				if len(stack) > 0 {
+					switch stack[len(stack)-1].(type) {
+					case *ast.GoStmt, *ast.DeferStmt:
+						return true
+					}
+				}
 				fn, ok := typeutil.Callee(p.Info, call).(*types.Func)
 				if !ok || fn.Pkg() == nil || fn.Pkg().Path() != "sort" || fn.Name() != "SliceStable" || len(call.Args) != 2 {
-					return
+					return true
 				}
 				slice, ok := ast.Unparen(call.Args[0]).(*ast.Ident)
 				if !ok {
-					return
+					return true
 				}
 				sliceType := p.Info.TypeOf(slice)
 				if sliceType == nil {
-					return
+					return true
 				}
 				if _, ok := sliceType.Underlying().(*types.Slice); !ok {
-					return
+					return true
 				}
 				less, ok := ast.Unparen(call.Args[1]).(*ast.FuncLit)
 				if !ok {
-					return
+					return true
 				}
 				sig, ok := p.Info.TypeOf(less).(*types.Signature)
 				if !ok || sig.Params().Len() != 2 {
-					return
+					return true
 				}
 				match := stableSortMatcher{info: p.Info, slice: p.Info.ObjectOf(slice), left: sig.Params().At(0), right: sig.Params().At(1)}
 				if match.body(less.Body.List) {
 					p.Report(call, "use slices.SortStableFunc with cmp.Compare instead of sort.SliceStable; reverse cmp.Compare arguments for descending keys and preserve tie-break order")
 				}
+				return true
 			})
 		},
 	}, opts...)

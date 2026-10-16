@@ -111,20 +111,90 @@ func errorsAsTypeNoCustomAs(info *types.Info, source ast.Expr, target types.Type
 	if typ == nil {
 		return false
 	}
+	if types.Identical(typ, target) {
+		return true
+	}
 	// A type parameter can admit named and unnamed instantiations that As
 	// assigns between, but AsType cannot match with a type assertion.
 	if _, ok := types.Unalias(target).(*types.TypeParam); ok {
-		return types.Identical(typ, target)
+		return false
 	}
 	if types.AssignableTo(typ, target) {
 		_, interfaceTarget := target.Underlying().(*types.Interface)
 		// As uses reflection assignability; a non-interface type assertion needs
 		// an identical dynamic type, not just an identical underlying type.
-		return types.Identical(typ, target) || interfaceTarget
+		return interfaceTarget
+	}
+	// Instantiation can make different composite types reflect-assignable even
+	// when the generic types are not assignable during analysis.
+	if errorsAsTypeHasTypeParam(typ) || errorsAsTypeHasTypeParam(target) {
+		return false
 	}
 	if _, ok := typ.Underlying().(*types.Interface); ok {
 		return false
 	}
 	methods := types.NewMethodSet(typ)
 	return methods.Lookup(nil, "As") == nil && methods.Lookup(nil, "Unwrap") == nil
+}
+
+func errorsAsTypeHasTypeParam(typ types.Type) bool {
+	seen := make(map[types.Type]bool)
+	var visit func(types.Type) bool
+	visit = func(typ types.Type) bool {
+		typ = types.Unalias(typ)
+		if seen[typ] {
+			return false
+		}
+		seen[typ] = true
+		switch typ := typ.(type) {
+		case *types.TypeParam:
+			return true
+		case *types.Named:
+			for arg := range typ.TypeArgs().Types() {
+				if visit(arg) {
+					return true
+				}
+			}
+			return visit(typ.Underlying())
+		case *types.Pointer:
+			return visit(typ.Elem())
+		case *types.Slice:
+			return visit(typ.Elem())
+		case *types.Array:
+			return visit(typ.Elem())
+		case *types.Map:
+			return visit(typ.Key()) || visit(typ.Elem())
+		case *types.Chan:
+			return visit(typ.Elem())
+		case *types.Struct:
+			for field := range typ.Fields() {
+				if visit(field.Type()) {
+					return true
+				}
+			}
+		case *types.Interface:
+			for method := range typ.ExplicitMethods() {
+				if visit(method.Type()) {
+					return true
+				}
+			}
+			for embedded := range typ.EmbeddedTypes() {
+				if visit(embedded) {
+					return true
+				}
+			}
+		case *types.Signature:
+			return visit(typ.Params()) || visit(typ.Results())
+		case *types.Tuple:
+			if typ != nil {
+				for variable := range typ.Variables() {
+					if visit(variable.Type()) {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}
+	return visit(typ)
 }

@@ -36,10 +36,5 @@ func writesDirectlyToStdout(call *ast.CallExpr) bool {
 	if _, ok := cop.CallTo(call, "fmt", "Fprint", "Fprintf", "Fprintln"); !ok || len(call.Args) == 0 {
 		return false
 	}
-	selector, ok := call.Args[0].(*ast.SelectorExpr)
-	if !ok || selector.Sel.Name != "Stdout" {
-		return false
-	}
-	pkg, ok := selector.X.(*ast.Ident)
-	return ok && pkg.Name == "os"
+	return cop.IsSelector(ast.Unparen(call.Args[0]), "os", "Stdout")
 }

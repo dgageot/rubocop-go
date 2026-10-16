@@ -35,6 +35,8 @@ func TestFieldsSeq(t *testing.T) {
 		src  string
 	}{
 		{"empty fallback", fieldsSeqFixture},
+		{"parenthesized callee", strings.ReplaceAll(fieldsSeqFixture, "strings.Fields(input)", "(strings.Fields)(input)")},
+		{"parenthesized len", strings.ReplaceAll(fieldsSeqFixture, "len(words)", "(len)(words)")},
 		{"alias import", strings.ReplaceAll(strings.Replace(fieldsSeqFixture, `import "strings"`, `import text "strings"`, 1), "strings.", "text.")},
 		{"dot import", strings.ReplaceAll(strings.Replace(fieldsSeqFixture, `import "strings"`, `import . "strings"`, 1), "strings.", "")},
 		{"var declaration", strings.Replace(fieldsSeqFixture, "words := strings.Fields(input)", "var words = strings.Fields(input)", 1)},

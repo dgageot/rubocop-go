@@ -27,39 +27,51 @@ func newHTTPTestRequestWithContextFile(opts ...cop.FuncOption) *cop.Func {
 			if p.Info == nil || ast.IsGenerated(p.File) {
 				return
 			}
-			p.ForEachCall(func(call *ast.CallExpr) {
+			ast.PreorderStack(p.File, nil, func(node ast.Node, stack []ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				// Only direct calls are delayed; calls within arguments still run now.
+				if len(stack) > 0 {
+					switch stack[len(stack)-1].(type) {
+					case *ast.GoStmt, *ast.DeferStmt:
+						return true
+					}
+				}
 				if len(call.Args) != 1 || call.Ellipsis.IsValid() {
-					return
+					return true
 				}
 				method, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
 				if !ok {
-					return
+					return true
 				}
 				selection := p.Info.Selections[method]
 				if selection == nil || selection.Kind() != types.MethodVal || len(selection.Index()) != 1 {
-					return
+					return true
 				}
 				fn, ok := selection.Obj().(*types.Func)
 				if !ok || fn.Pkg() == nil || fn.Pkg().Path() != "net/http" || fn.Name() != "WithContext" {
-					return
+					return true
 				}
 				request, ok := ast.Unparen(method.X).(*ast.CallExpr)
 				if !ok || len(request.Args) != 3 || request.Ellipsis.IsValid() {
-					return
+					return true
 				}
 				ctor, ok := p.CalleeObject(request).(*types.Func)
 				if !ok || ctor.Pkg() == nil || ctor.Pkg().Path() != "net/http/httptest" || ctor.Name() != "NewRequest" {
-					return
+					return true
 				}
 				// Moving context before construction is safe only for inert
 				// method/target strings and a nil body.
 				if p.Info.Types[request.Args[0]].Value == nil || p.Info.Types[request.Args[1]].Value == nil || !httpTestNil(p.Info, request.Args[2]) {
-					return
+					return true
 				}
 				if !httpTestContext(p.Info, call.Args[0]) {
-					return
+					return true
 				}
 				p.Report(call, "use httptest.NewRequestWithContext(ctx, method, target, nil); keep context evaluation and request validation in their original order")
+				return true
 			})
 		},
 	}, opts...)

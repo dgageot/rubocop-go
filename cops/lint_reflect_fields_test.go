@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -226,4 +227,54 @@ func runReflectFields(t *testing.T, filename, src string) []cop.Offense {
 	pass := &cop.Pass{Cop: newReflectFieldsFile(), FileSet: fset, File: file, Info: info, Package: pkg}
 	newReflectFieldsFile().Check(pass)
 	return pass.Offenses()
+}
+
+func TestReflectFieldsValidationRecommendation(t *testing.T) {
+	t.Parallel()
+	for _, init := range []string{"reflect.Value{}", "reflect.ValueOf(42)", "reflect.ValueOf([]int{})", "reflect.ValueOf(struct{ A int }{})"} {
+		t.Run(init, func(t *testing.T) {
+			src := strings.Replace(reflectFieldsFixture, "func fields(v reflect.Value) {", "func fields() { v := "+init, 1)
+			offenses := runReflectFields(t, "sample.go", src)
+			require.Len(t, offenses, 1)
+			assert.Contains(t, offenses[0].Message, "_ = v.NumField() followed by range v.Fields()")
+		})
+	}
+}
+
+func TestReflectFieldsPreservesValidation(t *testing.T) {
+	t.Parallel()
+	for _, value := range []reflect.Value{
+		{},
+		reflect.ValueOf(42), reflect.ValueOf([]int{}), reflect.ValueOf((*int)(nil)),
+		reflect.ValueOf(struct{}{}), reflect.ValueOf(struct{ A, B int }{A: 1, B: 2}),
+	} {
+		t.Run(value.Kind().String(), func(t *testing.T) {
+			original := func() (names []string, panicValue any) {
+				defer func() { panicValue = recover() }()
+				for i := range value.NumField() {
+					_ = value.Field(i).Interface()
+					names = append(names, value.Type().Field(i).Name)
+				}
+				return names, panicValue
+			}
+			modernized := func() (names []string, panicValue any) {
+				defer func() { panicValue = recover() }()
+				_ = value.NumField()
+				for metadata, field := range value.Fields() {
+					_ = field.Interface()
+					names = append(names, metadata.Name)
+				}
+				return names, panicValue
+			}
+			originalNames, originalPanic := original()
+			modernizedNames, modernizedPanic := modernized()
+			assert.Equal(t, originalNames, modernizedNames)
+			assert.Equal(t, originalPanic, modernizedPanic)
+			if value.Kind() != reflect.Struct {
+				var valueError *reflect.ValueError
+				require.ErrorAs(t, originalPanic.(error), &valueError)
+				assert.Equal(t, "reflect.Value.NumField", valueError.Method)
+			}
+		})
+	}
 }

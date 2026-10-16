@@ -30,7 +30,7 @@ func calleeObject(info *types.Info, call *ast.CallExpr) types.Object {
 	if info == nil {
 		return nil
 	}
-	switch fun := call.Fun.(type) {
+	switch fun := ast.Unparen(call.Fun).(type) {
 	case *ast.SelectorExpr:
 		return info.Uses[fun.Sel]
 	case *ast.Ident:
