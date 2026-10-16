@@ -17,6 +17,7 @@ func TestConstructorCommandExec(t *testing.T) {
 		want      int
 	}{
 		{"command", `import "os/exec"; func New() *exec.Cmd { return exec.Command("echo") }`, 1},
+		{"Unicode constructor", `import "os/exec"; func NewÉ() *exec.Cmd { return exec.Command("echo") }`, 1},
 		{"context", `import ("context"; "os/exec"); func NewCmd(ctx context.Context) *exec.Cmd { return exec.CommandContext(ctx, "echo") }`, 1},
 		{"alias", `import process "os/exec"; func NewCmd() *process.Cmd { return (process.Command)("echo") }`, 1},
 		{"dot import", `import . "os/exec"; func NewCmd() *Cmd { return Command("echo") }`, 1},
@@ -29,6 +30,15 @@ func TestConstructorCommandExec(t *testing.T) {
 		{"promoted method", `import "os/exec"; type Cmd struct { *exec.Cmd }; func NewCmd(cmd Cmd) error { return cmd.Run() }`, 1},
 		{"type alias", `import "os/exec"; type Cmd = exec.Cmd; func NewCmd(cmd *Cmd) error { return cmd.Run() }`, 1},
 		{"immediate closure", `import "os/exec"; func NewCmd() *exec.Cmd { return (func() *exec.Cmd { return exec.Command("echo") })() }`, 1},
+		{"converted immediate closure", `import "os/exec"; func NewCmd() int { (func())(func() { exec.Command("echo") })(); return 0 }`, 1},
+		{"named converted immediate closure", `import "os/exec"; type Action func(); func NewCmd() int { Action(func() { exec.Command("echo") })(); return 0 }`, 1},
+		{"nested conversions", `import "os/exec"; type Action func(); func NewCmd() int { (func())(Action(func() { exec.Command("echo") }))(); return 0 }`, 1},
+		{"converted deferred closure", `import "os/exec"; type Action func(); func NewCmd() int { defer Action(func() { exec.Command("echo") })(); return 0 }`, 1},
+		{"callback factory", `import "os/exec"; func wrap(f func()) func() { return f }; func NewCmd() int { wrap(func() { exec.Command("echo") })(); return 0 }`, 0},
+		{"converted lazy closure", `import "os/exec"; type Action func(); func NewCmd() Action { return Action(func() { exec.Command("echo") }) }`, 0},
+		{"converted goroutine closure", `import "os/exec"; type Action func(); func NewCmd() int { go Action(func() { exec.Command("echo") })(); return 0 }`, 0},
+		{"range function", `import "os/exec"; func NewCmd() int { for range func(yield func() bool) { exec.Command("echo") } {}; return 0 }`, 1},
+		{"converted range function", `import "os/exec"; type Iterator func(func() bool); func NewCmd() int { for range Iterator(func(yield func() bool) { exec.Command("echo") }) {}; return 0 }`, 1},
 		{"deferred closure", `import "os/exec"; func NewCmd(cmd *exec.Cmd) *exec.Cmd { defer func() { _ = cmd.Run() }(); return cmd }`, 1},
 		{"go receiver", `import "os/exec"; func NewCmd() any { go exec.Command("echo").Run(); return nil }`, 1},
 		{"go argument", `import "os/exec"; func NewCmd() any { go func(cmd *exec.Cmd) {}(exec.Command("echo")); return nil }`, 1},

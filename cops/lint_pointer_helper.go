@@ -83,6 +83,15 @@ func newPointerHelperFile(opts ...cop.FuncOption) *cop.Func {
 				default:
 					return true
 				}
+				sig := fn.Signature()
+				if sig.TypeParams().Len() != 0 || sig.Variadic() || sig.Params().Len() != 1 || sig.Results().Len() != 1 {
+					return true
+				}
+				scalar := types.Universe.Lookup(conversion).Type()
+				pointer, ok := types.Unalias(sig.Results().At(0).Type()).(*types.Pointer)
+				if !ok || !types.Identical(sig.Params().At(0).Type(), scalar) || !types.Identical(pointer.Elem(), scalar) {
+					return true
+				}
 				scope := p.Package.Scope().Innermost(call.Pos())
 				if scope == nil {
 					return true

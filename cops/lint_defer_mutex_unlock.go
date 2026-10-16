@@ -10,11 +10,10 @@ import (
 // NewLintDeferMutexUnlock catches manual mutex unlocks that are safe and clearer as a
 // defer immediately after the corresponding lock.
 //
-// The cop is deliberately conservative. It ignores intentionally short critical
-// sections (work after unlock), unlock/relock patterns, nested lock scopes, and
-// terminal returns with side-effectful result expressions. Those patterns would
-// change behavior if rewritten to defer because Go evaluates return expressions
-// before running deferred calls.
+// The cop is deliberately conservative. It ignores short critical sections,
+// early exits and jumps, intervening defers, and nested lock operations. Terminal
+// return expressions must be side-effect-free because Go evaluates them before
+// running deferred calls.
 func NewLintDeferMutexUnlock(opts ...cop.FuncOption) *cop.Func {
 	return configuredFileCop(&cop.Func{
 		Meta: cop.Meta{
@@ -85,11 +84,11 @@ func selectorCallStmt(stmt ast.Stmt) (name, recv string, ok bool) {
 	if !ok {
 		return "", "", false
 	}
-	call, ok := exprStmt.X.(*ast.CallExpr)
+	call, ok := ast.Unparen(exprStmt.X).(*ast.CallExpr)
 	if !ok {
 		return "", "", false
 	}
-	sel, ok := call.Fun.(*ast.SelectorExpr)
+	sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
 	if !ok {
 		return "", "", false
 	}
@@ -97,7 +96,7 @@ func selectorCallStmt(stmt ast.Stmt) (name, recv string, ok bool) {
 }
 
 func selectorReceiver(expr ast.Expr) string {
-	switch v := expr.(type) {
+	switch v := ast.Unparen(expr).(type) {
 	case *ast.Ident:
 		return v.Name
 	case *ast.SelectorExpr:
@@ -116,7 +115,7 @@ func isDeferUnlock(stmt ast.Stmt, lock mutexCall) bool {
 	if !ok {
 		return false
 	}
-	sel, ok := deferStmt.Call.Fun.(*ast.SelectorExpr)
+	sel, ok := ast.Unparen(deferStmt.Call.Fun).(*ast.SelectorExpr)
 	if !ok {
 		return false
 	}
@@ -124,83 +123,93 @@ func isDeferUnlock(stmt ast.Stmt, lock mutexCall) bool {
 }
 
 func isSafeManualUnlockAtEnd(stmts []ast.Stmt, lockIdx int, lock mutexCall) bool {
-	unlockIdx := -1
-	for i := lockIdx + 1; i < len(stmts); i++ {
-		if stmtContainsDefer(stmts[i]) {
+	unlockIdx := len(stmts) - 1
+	if ret, ok := stmts[unlockIdx].(*ast.ReturnStmt); ok {
+		if !returnResultsAreSideEffectFree(ret) {
 			return false
 		}
-		name, recv, ok := selectorCallStmt(stmts[i])
-		if !ok {
-			// Compound statement (if/for/switch/...): a nested lock or unlock of
-			// the same mutex means the terminal unlock is not the sole release,
-			// so deferring it would change behavior.
-			if stmtContainsLockOp(stmts[i], lock) {
-				return false
-			}
-			continue
-		}
-		if recv != lock.recv {
-			continue
-		}
-		switch name {
-		case lock.method:
-			return false // release/reacquire or nested critical section
-		case lock.unlockMethod():
-			if unlockIdx >= 0 {
-				return false
-			}
-			unlockIdx = i
-		}
+		unlockIdx--
 	}
-	if unlockIdx < 0 {
+	if unlockIdx <= lockIdx {
 		return false
 	}
-	if unlockIdx == len(stmts)-1 {
-		return true
-	}
-	if unlockIdx+1 != len(stmts)-1 {
+	name, recv, ok := selectorCallStmt(stmts[unlockIdx])
+	if !ok || recv != lock.recv || name != lock.unlockMethod() {
 		return false
 	}
-	ret, ok := stmts[unlockIdx+1].(*ast.ReturnStmt)
-	if !ok {
-		return false
+	for _, stmt := range stmts[lockIdx+1 : unlockIdx] {
+		if stmtPreventsDeferredUnlock(stmt) || nodeContainsLockOp(stmt, lock) {
+			return false
+		}
 	}
-	return returnResultsAreSideEffectFree(ret)
+	// Even a selector call can evaluate callbacks in its arguments.
+	call := ast.Unparen(stmts[unlockIdx].(*ast.ExprStmt).X).(*ast.CallExpr)
+	for _, arg := range call.Args {
+		if nodeContainsLockOp(arg, lock) {
+			return false
+		}
+	}
+	return true
 }
 
-func stmtContainsLockOp(stmt ast.Stmt, lock mutexCall) bool {
+func nodeContainsLockOp(node ast.Node, lock mutexCall) bool {
 	found := false
-	ast.Inspect(stmt, func(n ast.Node) bool {
+	ast.Inspect(node, func(n ast.Node) bool {
 		if found {
 			return false
 		}
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-		if selectorReceiver(sel.X) != lock.recv {
-			return true
-		}
-		switch sel.Sel.Name {
-		case lock.method, lock.unlockMethod():
-			found = true
+		switch n := n.(type) {
+		case *ast.FuncLit:
+			return false // A stored closure does not execute here.
+		case *ast.CallExpr:
+			if sel, ok := ast.Unparen(n.Fun).(*ast.SelectorExpr); ok && selectorReceiver(sel.X) == lock.recv {
+				switch sel.Sel.Name {
+				case "Lock", "Unlock", "RLock", "RUnlock":
+					found = true
+				}
+			}
+			if literal := calledFuncLit(n.Fun); !found && literal != nil {
+				found = nodeContainsLockOp(literal.Body, lock)
+			}
+			// Inline callbacks may execute even when the callee is a selector.
+			for _, arg := range n.Args {
+				if found {
+					break
+				}
+				ast.Inspect(arg, func(node ast.Node) bool {
+					if found {
+						return false
+					}
+					if literal, ok := node.(*ast.FuncLit); ok {
+						found = nodeContainsLockOp(literal.Body, lock)
+						return false
+					}
+					return true
+				})
+			}
 		}
 		return !found
 	})
 	return found
 }
 
-func stmtContainsDefer(stmt ast.Stmt) bool {
+func stmtPreventsDeferredUnlock(stmt ast.Stmt) bool {
 	found := false
 	ast.Inspect(stmt, func(n ast.Node) bool {
 		if found {
 			return false
 		}
-		_, found = n.(*ast.DeferStmt)
+		switch n := n.(type) {
+		case *ast.FuncLit:
+			return false // Returns and defers belong to the closure's scope.
+		case *ast.DeferStmt, *ast.ReturnStmt:
+			found = true
+		case *ast.LabeledStmt:
+			// A jump to this label could bypass registering the defer.
+			found = true
+		case *ast.BranchStmt:
+			found = n.Tok == token.GOTO
+		}
 		return !found
 	})
 	return found
@@ -216,7 +225,7 @@ func returnResultsAreSideEffectFree(ret *ast.ReturnStmt) bool {
 }
 
 func exprIsSideEffectFree(expr ast.Expr) bool {
-	switch v := expr.(type) {
+	switch v := ast.Unparen(expr).(type) {
 	case nil:
 		return true
 	case *ast.BasicLit:

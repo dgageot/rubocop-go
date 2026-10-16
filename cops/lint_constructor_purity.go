@@ -2,6 +2,10 @@ package cops
 
 import (
 	"go/ast"
+	"go/types"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/dgageot/rubocop-go/cop"
 )
@@ -21,13 +25,14 @@ import (
 // accept a context the goroutine honours), so that starting background work
 // is a deliberate, observable step rather than a hidden effect of New.
 //
-// Detection is body-local and syntactic: only `go` statements that execute
+// Detection is body-local: only `go` statements that execute
 // as part of construction are flagged. A `go` nested inside a function
 // literal that the constructor merely returns or stores runs when that
 // closure is later invoked, not at construction time, so it is intentionally
-// ignored. Immediately-invoked function literals are inspected because they
-// do run during construction. Goroutines started indirectly through a helper
-// call are out of scope — catching those would require call-graph analysis.
+// ignored. Immediately-invoked function literals and inline range functions
+// are inspected because they run during construction. Goroutines started
+// indirectly through a helper call are out of scope — catching those would
+// require call-graph analysis.
 //
 // Annotate an intentional case with //rubocop:disable Lint/ConstructorPurity.
 func NewLintConstructorPurity(opts ...cop.FuncOption) *cop.Func {
@@ -37,12 +42,13 @@ func NewLintConstructorPurity(opts ...cop.FuncOption) *cop.Func {
 			Description: "Avoid starting goroutines in constructors.",
 			Severity:    cop.Error,
 		},
+		Types: true,
 		Run: func(p *cop.Pass) {
 			p.ForEachFunc(func(fn *ast.FuncDecl) {
 				if !isConstructor(fn) || fn.Body == nil {
 					return
 				}
-				forEachConstructionGoStmt(fn.Body, func(g *ast.GoStmt) {
+				forEachConstructionGoStmt(p.Info, fn.Body, func(g *ast.GoStmt) {
 					p.Reportf(g,
 						"constructor %s starts a goroutine; defer this to a Start/Run method"+
 							" so background work is started deliberately and can be stopped",
@@ -68,22 +74,34 @@ func isConstructor(fn *ast.FuncDecl) bool {
 }
 
 func isConstructorName(name string) bool {
-	return name == "New" || (len(name) > 3 && name[:3] == "New" && name[3] >= 'A' && name[3] <= 'Z')
+	if name == "New" {
+		return true
+	}
+	if !strings.HasPrefix(name, "New") {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(name[len("New"):])
+	return unicode.IsUpper(r)
 }
 
 // inspectConstructionBody walks body and visits nodes that run as part of
-// executing the constructor. Nested function literals are skipped unless they
-// are immediately invoked (func() { ... })(), in which case their body runs
-// during construction and is inspected.
+// executing the constructor. Nested function literals are skipped unless
+// invoked directly or used as an inline range function.
 func inspectConstructionBody(body *ast.BlockStmt, visit func(ast.Node)) {
 	if body == nil {
 		return
 	}
-	inspectConstructionNode(body, visit)
+	inspectConstructionNode(nil, body, visit)
 }
 
-func inspectConstructionNode(root ast.Node, visit func(ast.Node)) {
+func inspectConstructionNode(info *types.Info, root ast.Node, visit func(ast.Node)) {
+	if root == nil {
+		return
+	}
 	ast.Inspect(root, func(n ast.Node) bool {
+		if expr, ok := n.(ast.Expr); ok && info != nil && info.Types[expr].Value != nil {
+			return false // Constant expressions have no evaluated operands.
+		}
 		switch s := n.(type) {
 		case nil:
 			return true
@@ -92,18 +110,31 @@ func inspectConstructionNode(root ast.Node, visit func(ast.Node)) {
 		case *ast.GoStmt:
 			visit(s)
 			// The invocation is asynchronous, but its receiver and arguments are not.
-			inspectConstructionNode(s.Call.Fun, visit)
+			inspectConstructionNode(info, s.Call.Fun, visit)
 			for _, arg := range s.Call.Args {
-				inspectConstructionNode(arg, visit)
+				inspectConstructionNode(info, arg, visit)
 			}
 			return false
-		case *ast.CallExpr:
+		case *ast.RangeStmt:
 			visit(s)
-			if fl := calledFuncLit(s.Fun); fl != nil {
+			inspectConstructionNode(info, s.X, visit)
+			if fl := constructionFuncLit(info, s.X); fl != nil {
+				inspectConstructionNode(info, fl.Body, visit)
+			}
+			inspectConstructionNode(info, s.Key, visit)
+			inspectConstructionNode(info, s.Value, visit)
+			inspectConstructionNode(info, s.Body, visit)
+			return false
+		case *ast.CallExpr:
+			if unevaluatedConstructionCall(info, s) {
+				return false
+			}
+			visit(s)
+			if fl := constructionFuncLit(info, s.Fun); fl != nil {
 				for _, arg := range s.Args {
-					inspectConstructionNode(arg, visit)
+					inspectConstructionNode(info, arg, visit)
 				}
-				inspectConstructionNode(fl.Body, visit)
+				inspectConstructionNode(info, fl.Body, visit)
 				return false
 			}
 		default:
@@ -111,6 +142,43 @@ func inspectConstructionNode(root ast.Node, visit func(ast.Node)) {
 		}
 		return true
 	})
+}
+
+// constructionFuncLit unwraps conversions, but not calls that accept callbacks.
+// Without type information, only explicit function types are unambiguous.
+func constructionFuncLit(info *types.Info, expr ast.Expr) *ast.FuncLit {
+	for {
+		expr = ast.Unparen(expr)
+		if fl, ok := expr.(*ast.FuncLit); ok {
+			return fl
+		}
+		call, ok := expr.(*ast.CallExpr)
+		if !ok || len(call.Args) != 1 {
+			return nil
+		}
+		_, conversion := ast.Unparen(call.Fun).(*ast.FuncType)
+		if info != nil {
+			conversion = info.Types[call.Fun].IsType() || conversion
+		}
+		if !conversion {
+			return nil
+		}
+		expr = call.Args[0]
+	}
+}
+
+func unevaluatedConstructionCall(info *types.Info, call *ast.CallExpr) bool {
+	if obj := calleeObject(info, call); obj != nil {
+		if obj.Pkg() == nil || obj.Pkg().Path() != "unsafe" {
+			return false
+		}
+		switch obj.Name() {
+		case "Sizeof", "Alignof", "Offsetof":
+			return true
+		}
+		return false
+	}
+	return cop.IsCallTo(call, "unsafe", "Sizeof", "Alignof", "Offsetof")
 }
 
 func calledFuncLit(expr ast.Expr) *ast.FuncLit {
@@ -128,10 +196,22 @@ func calledFuncLit(expr ast.Expr) *ast.FuncLit {
 
 // forEachConstructionGoStmt invokes fn for every `go` statement that runs as
 // part of executing body.
-func forEachConstructionGoStmt(body *ast.BlockStmt, fn func(*ast.GoStmt)) {
-	inspectConstructionBody(body, func(n ast.Node) {
+func forEachConstructionGoStmt(info *types.Info, body *ast.BlockStmt, fn func(*ast.GoStmt)) {
+	inspectConstructionNode(info, body, func(n ast.Node) {
 		if g, ok := n.(*ast.GoStmt); ok {
 			fn(g)
+		}
+	})
+}
+
+func forEachTypedConstructionCall(info *types.Info, body *ast.BlockStmt, fn func(*ast.CallExpr)) {
+	if info == nil {
+		forEachConstructionCallExpr(body, fn)
+		return
+	}
+	inspectConstructionNode(info, body, func(n ast.Node) {
+		if call, ok := n.(*ast.CallExpr); ok {
+			fn(call)
 		}
 	})
 }

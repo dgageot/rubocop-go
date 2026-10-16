@@ -93,7 +93,9 @@ Version requirements use the target module and file build constraints, never the
 linter's toolchain. Language features use the effective file language version;
 standard-library APIs use the newer of the module and file requirements. Iterator
 recommendations check both API availability and range-over-function syntax.
-Unknown or older targets are skipped. Options cannot lower built-in minimums;
+Unknown or older targets are skipped. The type checker’s Go 1.21 language floor for
+older build constraints does not raise standard-library API availability. Options
+cannot lower built-in minimums;
 `cop.WithMinGoVersion` and `cop.WithMinStdlibVersion` may raise them. Run analysis
 with a toolchain that supports the target project. The full fixture suite needs
 Go 1.27+; Go 1.26 still runs portable pattern tests, skipping only fixtures that
@@ -132,10 +134,13 @@ no project-specific directory exclusions are built in.
 
 - **SlogContextual:** `slog.Info("started")` → `slog.InfoContext(ctx, "started")`
   when a context is lexically available, respecting declaration order and shadowing.
-  Checks top-level helpers, not logger methods.
+  Checks top-level slog helpers, including calls in package-level function literals,
+  not logger methods. Blank and unnamed parameters do not provide a usable context;
+  `context.Cause` and `context.AfterFunc` are not context producers.
 - **ConstructorPurity:** move `go worker()` from `NewClient` to an explicit
-  lifecycle method. Checks direct construction-time statements, including IIFEs,
-  not side effects hidden in helpers. Intentionally lazy closures are excluded.
+  lifecycle method. Checks direct construction-time statements, including converted
+  IIFEs and inline range functions, not side effects hidden in helpers. Unevaluated `unsafe` operands
+  are excluded. Intentionally lazy closures are excluded.
 - **ConstructorNetworkIO:** move `net.Dial(...)` from a constructor to an explicit
   operation. Covers selected `net`/`net/http` APIs, not every network method.
   Goroutine bodies are excluded, but their synchronously evaluated receivers and
@@ -159,14 +164,18 @@ no project-specific directory exclusions are built in.
   produce overlapping diagnostics.
 - **WrapErrors:** `fmt.Errorf("read: %v", err)` → `fmt.Errorf("read: %w", err)`.
   Checks builtin `error` arguments, including aliases, and leaves calls already containing `%w`
-  alone. Deliberate error abstraction boundaries may need suppression.
+  alone. Resolved `fmt.Errorf` identity and constant formats are used; indexed operands,
+  width/precision arguments, escaped percent verbs, and type-only `%T`/`%p` output
+  do not imply error-message interpolation. Deliberate error abstraction boundaries
+  may need suppression.
 - **ErrorStringMatching:** replace `strings.Contains(err.Error(), "missing")`
   with `errors.Is` or `errors.As` when the API exposes structured errors.
   Tests are excluded; arbitrary comparisons and stored error strings are not
-  analyzed.
+  analyzed. Import aliases and implicit pointer-receiver calls are resolved.
 - **DeferMutexUnlock:** consider `mu.Lock(); defer mu.Unlock()` instead of a
-  terminal manual unlock. Matching is syntactic. This is not proof of equivalent
-  panic behavior, receiver capture, or return-expression evaluation timing.
+  terminal manual unlock. Matching is syntactic. Early returns, jumps, and
+  intervening lock operations are excluded. This is not proof of equivalent panic behavior, receiver capture,
+  or return-expression evaluation timing.
 - **StreamCloseSafety:** synchronize fields shared by `Close` and `Next`/`Recv`,
   or make them reader-owned. Opt in only for APIs whose contract permits these
   methods to run concurrently. The analysis follows receiver fields and helpers
@@ -174,6 +183,11 @@ no project-specific directory exclusions are built in.
   Stored closures and callbacks do not inherit locks from their declaration site;
   immediate closures do. Value-receiver writes to copied fields are excluded,
   while shared pointees remain checked; copied mutexes do not prove synchronization.
+  Receiver copies are checked before method-body locks. Helper unlocks invalidate
+  caller locks, aggregate copies include their fields, and `go`/`defer` arguments
+  retain their synchronous evaluation context. Possible asynchronous releases
+  invalidate held-lock assumptions. Only receiver-method helpers with
+  loaded bodies are followed; test-only implementations are not loaded.
 
 ### Modernization
 
@@ -182,9 +196,11 @@ no project-specific directory exclusions are built in.
 - **PointerHelper:** `aws.Int64(42)` → `new(int64(42))`. Only AWS SDK v2 scalar
   pointer helpers are matched, not methods or calls whose results are discarded
   directly by expression, defer, or go statements. Preserve conversions and
-  argument evaluation.
+  argument evaluation. Helpers must have the expected nongeneric scalar-to-pointer
+  signature.
 - **ReflectFields:** paired `v.Field(i)`/`v.Type().Field(i)` loops →
-  `for field, value := range v.Fields()`. Receiver mutation, escape, unrelated
+  `for field, value := range v.Fields()`. Keep an initial `_ = v.NumField()`
+  to preserve invalid/non-struct panic behavior. Receiver mutation, escape, unrelated
   index uses, and unsafe callbacks are excluded.
 - **StdlibUUID:** Google UUID `NewString()` → standard-library
   `uuid.NewV4().String()`. Only compatible string-producing patterns are matched;
@@ -192,9 +208,12 @@ no project-specific directory exclusions are built in.
   configuration in production, tests, or imported dependencies suppresses random-UUID
   recommendations, including assignments or address escapes of `crypto/rand.Reader`,
   even outside the configured candidate scope. Canonical literal parsing remains
-  eligible independently of randomness configuration or randomness-load failures.
+  eligible independently of randomness configuration or randomness-load failures,
+  and literal-only candidates do not load randomness dependencies. Direct
+  `go`/`defer NewString()` calls are excluded to preserve generation timing.
 - **URLClone:** replace an equivalent nil-safe deep-copy helper with `u.Clone()`.
-  Ordinary shallow copies are excluded because cloning also copies userinfo.
+  Ordinary shallow copies are excluded because cloning also copies userinfo. Retain
+  an existing nil guard when an interface result must remain a nil interface.
 - **JSONMarshalWrite:** buffered `Encoder.Encode` followed by newline trimming →
   consider `jsonv2.MarshalWrite`. Keep the local buffer and error returns, use
   v1-compatible options and explicit HTML escaping, discard partial output on
@@ -242,8 +261,8 @@ no project-specific directory exclusions are built in.
   string keys → `slices.SortStableFunc` with `cmp.Compare`. Reverse arguments for
   descending keys and preserve lazy tie-break evaluation; eagerly computing all
   comparisons can dereference nil pointers that the original never touched.
-  Floating-point keys (NaN ordering), effectful callbacks, tests, and generated
-  code are excluded.
+  Floating-point keys (NaN ordering), effectful callbacks, deferred/goroutine
+  sorting calls, tests, and generated code are excluded.
 
 - **ErrorsAsType:** fresh `var e *E; if errors.As(err, &e) { ... }` →
   `if e, ok := errors.AsType[*E](err); ok { ... }`. Target reads must stay in
@@ -253,11 +272,15 @@ no project-specific directory exclusions are built in.
   Arbitrary interface targets not implementing `error` are excluded. Generic
   targets require the identical source type parameter: reflection assignability
   between named and unnamed instantiations is not equivalent to a type assertion.
+  Composite generic types are excluded from the leaf-error fallback unless
+  assignability is already established.
   Includes resolved production, internal/external tests, and test-only packages;
   skips generated files. Safety must hold in every healthy production/test package
   variant, including methods added by internal tests.
 
-- **MapsCopy:** Plain `for k, v := range src { dst[k] = v }` → `maps.Copy(dst, src)`. Only local identifiers and exact key/value types are matched; transformations, filters, extra work, and externally assigned loop variables are excluded. Separate merges keep their original order; nil destinations are not initialized. Selecting MapsClone too can produce overlapping diagnostics. Includes resolved production, internal/external tests,
+- **MapsCopy:** Plain `for k, v := range src { dst[k] = v }` → `maps.Copy(dst, src)`. Only local identifiers and exact key/value types are matched; transformations, filters, extra work, and externally assigned loop variables are excluded. Separate merges keep their original order; nil destinations are not initialized. Selecting MapsClone too can produce overlapping diagnostics. Map-constrained type
+  parameters are supported when all terms have the same key/value shape; complex
+  constraint intersections are conservatively excluded. Includes resolved production, internal/external tests,
   and test-only packages; generated code is excluded.
 
 - **MapsClone:** Exact nil-safe shallow-copy helpers → `maps.Clone(src)`. Requires matching source/result/destination types and an explicit nil-return guard. Deep copies, unconditional allocation, custom capacity hints, and key types that may contain NaNs are excluded. Includes resolved production, internal/external tests,
@@ -275,7 +298,8 @@ no project-specific directory exclusions are built in.
 - **SortedMapKeys:** Adjacent nil-slice declaration, unfiltered key collection, and ascending sort → `slices.Sorted(maps.Keys(src))`. Restricts keys to integers/strings and destinations to unnamed slices. Non-nil empty results, capacity hints, floats, custom ordering, and delayed traversal are excluded. Preserve any downstream capacity contract; exact capacity is not guaranteed by the API. This is a clarity suggestion, not an allocation-performance guarantee. Includes resolved production, internal/external tests,
   and test-only packages; generated code is excluded.
 
-- **WaitGroupGo:** Adjacent `wg.Add(1); go func() { defer wg.Done(); ... }()` → consider `wg.Go`. Requires exact sync methods, a stable local receiver, no arguments, and the matching defer first. Reassigned or escaping receiver variables, promoted methods, extra group operations, and direct recover are excluded. Advisory only: the callback must not let a panic escape; review captures and completion timing. Includes resolved production, internal/external tests,
+- **WaitGroupGo:** Adjacent `wg.Add(1); go func() { defer wg.Done(); ... }()` → consider `wg.Go`. Requires exact sync methods, a stable local receiver, no arguments, and the matching defer first. Reassigned or escaping receiver variables, promoted methods, extra group operations (including direct
+  aliases), and direct recover are excluded. Advisory only: the callback must not let a panic escape; review captures and completion timing. Includes resolved production, internal/external tests,
   and test-only packages; generated code is excluded.
 
 - **Byte prefix/suffix cuts:** CutPrefix and CutSuffix also recognize
@@ -291,7 +315,8 @@ no project-specific directory exclusions are built in.
   `httptest.NewRequestWithContext(ctx, "GET", "/", nil)`. Matches constant
   method/target strings, a nil body, and a local context identifier or inert
   `context.Background`/`TODO` call. Keep context evaluation and request validation
-  in their original order; verify the supplied context is non-nil. Bodies,
+  in their original order; verify the supplied context is non-nil. Direct `go`/`defer`
+  calls are excluded because they move construction timing. Bodies,
   effectful context expressions, fields, globals, retained request temporaries,
   and arbitrary non-contextual requests are excluded. Program-backed and includes
   test-only/internal/external packages; generated code is excluded. Complements

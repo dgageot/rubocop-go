@@ -31,8 +31,9 @@ func NewLintNewExpr(opts ...cop.FuncOption) *cop.Func {
 			ast.Inspect(p.File, func(n ast.Node) bool {
 				// Partial typing may mistake an implicitly named import for the builtin.
 				if selector, ok := n.(*ast.SelectorExpr); ok {
-					if id, ok := selector.X.(*ast.Ident); ok && id.Name == "new" {
-						shadowedNew = true
+					if id, ok := ast.Unparen(selector.X).(*ast.Ident); ok && id.Name == "new" {
+						obj := p.Info.Uses[id]
+						shadowedNew = obj == nil || obj == types.Universe.Lookup("new")
 					}
 				}
 				return !shadowedNew

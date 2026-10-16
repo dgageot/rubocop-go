@@ -51,8 +51,8 @@ func mapsCopyLoop(p *cop.Pass, loop *ast.RangeStmt) bool {
 	if src == nil {
 		return false
 	}
-	from, ok := src.Type().Underlying().(*types.Map)
-	if !ok {
+	from := mapsCopyMapType(src.Type())
+	if from == nil {
 		return false
 	}
 	assign, ok := loop.Body.List[0].(*ast.AssignStmt)
@@ -67,13 +67,45 @@ func mapsCopyLoop(p *cop.Pass, loop *ast.RangeStmt) bool {
 	if dst == nil || dst == p.Info.Defs[key] || dst == p.Info.Defs[value] {
 		return false
 	}
-	to, ok := dst.Type().Underlying().(*types.Map)
-	if !ok || !types.Identical(from.Key(), to.Key()) || !types.Identical(from.Elem(), to.Elem()) {
+	to := mapsCopyMapType(dst.Type())
+	if to == nil || !types.Identical(from.Key(), to.Key()) || !types.Identical(from.Elem(), to.Elem()) {
 		return false
 	}
 	k, kOK := ast.Unparen(index.Index).(*ast.Ident)
 	v, vOK := ast.Unparen(assign.Rhs[0]).(*ast.Ident)
 	return kOK && vOK && p.Info.ObjectOf(k) == p.Info.Defs[key] && p.Info.ObjectOf(v) == p.Info.Defs[value]
+}
+
+func mapsCopyMapType(t types.Type) *types.Map {
+	if param, ok := types.Unalias(t).(*types.TypeParam); ok {
+		return mapsCopyConstraintMap(param.Constraint())
+	}
+	m, _ := t.Underlying().(*types.Map)
+	return m
+}
+
+// mapsCopyConstraintMap accepts only a single map shape without normalizing
+// intersections. Key and value type parameters retain their exact identities.
+func mapsCopyConstraintMap(t types.Type) *types.Map {
+	switch t := t.Underlying().(type) {
+	case *types.Map:
+		return t
+	case *types.Interface:
+		if t.NumEmbeddeds() == 1 {
+			return mapsCopyConstraintMap(t.EmbeddedType(0))
+		}
+	case *types.Union:
+		var shape *types.Map
+		for term := range t.Terms() {
+			m := mapsCopyConstraintMap(term.Type())
+			if m == nil || shape != nil && !types.Identical(shape, m) {
+				return nil
+			}
+			shape = m
+		}
+		return shape
+	}
+	return nil
 }
 
 func mapsCopyLocal(p *cop.Pass, expr ast.Expr) *types.Var {

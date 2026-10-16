@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -62,6 +63,80 @@ func TestMapsCopy(t *testing.T) {
 				assert.Equal(t, 2, offense.Pos.Line)
 				assert.Greater(t, offense.End.Offset, offense.Pos.Offset)
 			}
+		})
+	}
+}
+
+func TestMapsCopyGenericShapes(t *testing.T) {
+	t.Parallel()
+	const loop = "for k, v := range src { dst[k] = v }"
+	for _, tc := range []struct {
+		name, decl string
+		want       int
+		copyValid  bool
+	}{
+		{"type parameters in map", `func f[K comparable, V any](dst, src map[K]V)`, 1, true},
+		{"map type parameter", `func f[M ~map[K]V, K comparable, V any](dst, src M)`, 1, true},
+		{"exact map constraint", `func f[M map[K]V, K comparable, V any](dst, src M)`, 1, true},
+		{"distinct map parameters", `func f[D, S ~map[K]V, K comparable, V any](dst D, src S)`, 1, true},
+		{"generic source", `func f[M ~map[K]V, K comparable, V any](dst map[K]V, src M)`, 1, true},
+		{"generic destination", `func f[M ~map[K]V, K comparable, V any](dst M, src map[K]V)`, 1, true},
+		{"named constraint", `type C[K comparable, V any] interface { ~map[K]V }; func f[M C[K, V], K comparable, V any](dst, src M)`, 1, true},
+		{"embedded constraint", `type C interface { ~map[string]int }; type D interface { C }; func f[M D](dst, src M)`, 1, true},
+		{"constraint with method", `func f[M interface { ~map[string]int; Mark() }](dst, src M)`, 1, true},
+		{"named map union", `type A map[string]int; type B map[string]int; func f[M A | B](dst, src M)`, 1, true},
+		{"embedded union", `type A map[string]int; type C interface { A }; type D interface { ~map[string]int }; func f[M C | D](dst, src M)`, 1, true},
+		{"generic aliases", `type C[K comparable, V any] = interface { ~map[K]V }; type A[K comparable, V any] = map[K]V; func f[M C[K, V], K comparable, V any](dst A[K, V], src M)`, 1, true},
+		{"assignable key not identical", `func f[M ~map[K]V, K comparable, V any](dst map[any]V, src M)`, 0, false},
+		{"assignable value not identical", `func f[M ~map[K]V, K comparable, V any](dst map[K]any, src M)`, 0, false},
+		{"distinct parameter and concrete value", `func f[M ~map[string]V, V ~int](dst map[string]any, src M)`, 0, false},
+		{"slice parameter", `func f[S ~[]V, V any](dst map[int]V, src S)`, 0, false},
+		{"intersected constraints", `type C interface { ~map[string]int }; type D interface { ~map[string]int }; func f[M interface { C; D }](dst, src M)`, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			src := "package p\n" + tc.decl + " { " + loop + " }"
+			require.Len(t, runExtractedTypedCop(t, newMapsCopyFile(), src), tc.want)
+
+			replacement := strings.Replace(src, "package p", "package p\nimport \"maps\"", 1)
+			replacement = strings.Replace(replacement, loop, "maps.Copy(dst, src)", 1)
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, "sample.go", replacement, 0)
+			require.NoError(t, err)
+			cfg := types.Config{Importer: importer.Default(), GoVersion: "go1.26"}
+			_, err = cfg.Check("fixture", fset, []*ast.File{file}, nil)
+			if tc.copyValid {
+				require.NoError(t, err, "suggested maps.Copy must compile")
+			} else {
+				require.Error(t, err, "incompatible map shapes must not be reported")
+			}
+		})
+	}
+}
+
+func TestMapsCopyRejectsUnsupportedMapConstraints(t *testing.T) {
+	t.Parallel()
+	for _, constraint := range []string{
+		"any",
+		"comparable",
+		"interface { Mark() }",
+		"~[]int",
+		"~map[int]int | ~[]int",
+		"~map[int]int | ~map[string]int",
+		"~map[int]int | ~map[int]string",
+		"interface { ~map[int]int; ~map[string]int }",
+		"interface { ~map[int]int; comparable }",
+	} {
+		t.Run(constraint, func(t *testing.T) {
+			t.Parallel()
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, "sample.go", "package p; func f[M "+constraint+"](src M) {}", 0)
+			require.NoError(t, err)
+			cfg := types.Config{GoVersion: "go1.26"}
+			pkg, err := cfg.Check("fixture", fset, []*ast.File{file}, nil)
+			require.NoError(t, err)
+			sig := pkg.Scope().Lookup("f").Type().(*types.Signature)
+			assert.Nil(t, mapsCopyMapType(sig.Params().At(0).Type()))
 		})
 	}
 }

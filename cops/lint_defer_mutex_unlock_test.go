@@ -101,6 +101,91 @@ func TestDeferMutexUnlockReturnExpressions(t *testing.T) {
 	}
 }
 
+func TestDeferMutexUnlockControlFlow(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"early handoff", `func f(handoff bool) { mu.Lock(); if handoff { return }; mu.Unlock() }`, 0},
+		{"early read-lock handoff", `func f(handoff bool) { mu.RLock(); if handoff { return }; mu.RUnlock() }`, 0},
+		{"early result evaluation", `func f(early bool) int { mu.Lock(); if early { return compute() }; mu.Unlock(); return 0 }`, 0},
+		{"switch handoff", `func f() { mu.Lock(); switch state { case 1: return }; mu.Unlock() }`, 0},
+		{"loop handoff", `func f() { mu.Lock(); for ready { return }; mu.Unlock() }`, 0},
+		{"select handoff", `func f() { mu.Lock(); select { case <-done: return; default: }; mu.Unlock() }`, 0},
+		{"jump bypasses lock", `func f(held bool) { if held { goto done }; mu.Lock(); done: work(); mu.Unlock() }`, 0},
+		{"jump to compound statement bypasses lock", `func f(held bool) { if held { goto done }; mu.Lock(); done: if ready { work() }; mu.Unlock() }`, 0},
+		{"backward jump reacquires lock", `func f(again bool) { start: work(); mu.Lock(); if again { goto start }; mu.Unlock() }`, 0},
+		{"jump bypasses unlock", `func f(skip bool) { mu.Lock(); if skip { goto done }; mu.Unlock(); done: return }`, 0},
+		{"return before lock", `func f(skip bool) { if skip { return }; mu.Lock(); work(); mu.Unlock() }`, 1},
+		{"loop break stays in scope", `func f() { mu.Lock(); for ready { if done { break }; work() }; mu.Unlock() }`, 1},
+		{"loop continue stays in scope", `func f() { mu.Lock(); for ready { if skip { continue }; work() }; mu.Unlock() }`, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Len(t, coptest.Run(t, NewLintDeferMutexUnlock(), "package p\n"+tc.src), tc.want)
+		})
+	}
+}
+
+func TestDeferMutexUnlockClosureScopes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"stored defer", `func f() { mu.Lock(); unused := func() { defer cleanup() }; _ = unused; work(); mu.Unlock() }`, 1},
+		{"stored lock operations", `func f() { mu.Lock(); unused := func() { mu.Unlock(); work(); mu.Lock() }; _ = unused; work(); mu.Unlock() }`, 1},
+		{"stored read-lock operations", `func f() { mu.RLock(); unused := func() { mu.RUnlock(); work(); mu.RLock() }; _ = unused; mu.RUnlock() }`, 1},
+		{"stored return", `func f() { mu.Lock(); unused := func() { return }; _ = unused; mu.Unlock() }`, 1},
+		{"immediate defer", `func f() { mu.Lock(); func() { defer cleanup() }(); work(); mu.Unlock() }`, 1},
+		{"parenthesized immediate defer", `func f() { mu.Lock(); (func() { defer cleanup() })(); mu.Unlock() }`, 1},
+		{"immediate return", `func f() { mu.Lock(); func() { if ready { return }; work() }(); mu.Unlock() }`, 1},
+		{"identifier callback defer", `func f() { mu.Lock(); run(func() { defer cleanup() }); mu.Unlock() }`, 1},
+		{"selector callback defer", `func f() { mu.Lock(); exec.Run(func() { defer cleanup() }); mu.Unlock() }`, 1},
+		{"selector callback return", `func f() { mu.Lock(); exec.Run(func() { return }); mu.Unlock() }`, 1},
+		{"identifier callback lock operations", `func f() { mu.Lock(); run(func() { mu.Unlock(); work(); mu.Lock() }); mu.Unlock() }`, 0},
+		{"selector callback lock operations", `func f() { mu.Lock(); exec.Run(func() { mu.Unlock(); work(); mu.Lock() }); mu.Unlock() }`, 0},
+		{"parenthesized callback lock operations", `func f() { mu.Lock(); exec.Run((func() { mu.Unlock(); work(); mu.Lock() })); mu.Unlock() }`, 0},
+		{"selector callback read-lock operations", `func f() { mu.RLock(); exec.Run(func() { mu.RUnlock(); work(); mu.RLock() }); mu.RUnlock() }`, 0},
+		{"immediate lock operations", `func f() { mu.Lock(); func() { mu.Unlock(); work(); mu.Lock() }(); mu.Unlock() }`, 0},
+		{"parenthesized immediate lock operations", `func f() { mu.Lock(); (func() { mu.Unlock(); work(); mu.Lock() })(); mu.Unlock() }`, 0},
+		{"immediate deferred unlock", `func f() { mu.Lock(); func() { defer mu.Unlock() }(); mu.Unlock() }`, 0},
+		{"deferred immediate unlock", `func f() { mu.Lock(); defer func() { mu.Unlock() }(); mu.Unlock() }`, 0},
+		{"stored closure with direct outer defer", `func f() { mu.Lock(); unused := func() { mu.Unlock() }; _ = unused; defer cleanup(); mu.Unlock() }`, 0},
+		{"goroutine unlock", `func f() { mu.Lock(); go func() { mu.Unlock() }(); mu.Unlock() }`, 0},
+		{"goroutine-local defer", `func f() { mu.Lock(); go func() { defer cleanup() }(); mu.Unlock() }`, 1},
+		{"stored closure inside immediate closure", `func f() { mu.Lock(); func() { unused := func() { mu.Unlock() }; _ = unused }(); mu.Unlock() }`, 1},
+		{"stored callback inside callback", `func f() { mu.Lock(); exec.Run(func() { unused := func() { mu.Unlock() }; _ = unused }); mu.Unlock() }`, 1},
+		{"closure scopes both reported", `func f() { mu.Lock(); unused := func() { mu.Lock(); work(); mu.Unlock() }; _ = unused; mu.Unlock() }`, 2},
+		{"immediate closure own defer remains excluded", `func f() { mu.Lock(); func() { other.Lock(); defer cleanup(); other.Unlock() }(); mu.Unlock() }`, 1},
+		{"immediate closure own return remains excluded", `func f() { mu.Lock(); func() { other.Lock(); if ready { return }; other.Unlock() }(); mu.Unlock() }`, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Len(t, coptest.Run(t, NewLintDeferMutexUnlock(), "package p\n"+tc.src), tc.want)
+		})
+	}
+}
+
+func TestDeferMutexUnlockCallArguments(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"identifier immediate argument", `func f() { mu.Lock(); run(func() int { mu.Unlock(); mu.Lock(); return 1 }()); mu.Unlock() }`},
+		{"selector immediate argument", `func f() { mu.Lock(); exec.Run(func() int { mu.Unlock(); mu.Lock(); return 1 }()); mu.Unlock() }`},
+		{"selector immediate receiver", `func f() { mu.Lock(); func() Executor { mu.Unlock(); mu.Lock(); return exec }().Run(); mu.Unlock() }`},
+		{"nested selector argument", `func f() { mu.Lock(); exec.Run(makeCallback(func() { mu.Unlock(); mu.Lock() })); mu.Unlock() }`},
+		{"terminal unlock argument", `func f() { mu.Lock(); mu.Unlock(func() int { mu.Unlock(); mu.Lock(); return 1 }()) }`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Empty(t, coptest.Run(t, NewLintDeferMutexUnlock(), "package p\n"+tc.src))
+		})
+	}
+}
+
 func TestDeferMutexUnlockReportsLockNotUnlock(t *testing.T) {
 	t.Parallel()
 	src := `package p
@@ -113,4 +198,22 @@ func f() {
 	require.Len(t, offenses, 1)
 	assert.Equal(t, 3, offenses[0].Pos.Line)
 	assert.Equal(t, 3, offenses[0].End.Line)
+}
+
+func TestDeferMutexUnlockNestedArgumentOperations(t *testing.T) {
+	for _, body := range []string{
+		`run(func() { (mu.Unlock)(); work(); (mu.Lock)() })`,
+		`runMany([]func(){func() { mu.Unlock(); work(); mu.Lock() }})`,
+		`run(func() { mu.Unlock(); mu.RLock() })`,
+	} {
+		src := `package p
+import "sync"
+var mu sync.RWMutex
+func work() {}
+func run(fn func()) { fn() }
+func runMany(fns []func()) { for _, fn := range fns { fn() } }
+func f() { mu.Lock(); ` + body + `; mu.Unlock() }
+`
+		assert.Empty(t, coptest.Run(t, NewLintDeferMutexUnlock(), src))
+	}
 }

@@ -109,6 +109,11 @@ func TestBenchmarkLoopExclusions(t *testing.T) {
 		{"result field accumulator", strings.Replace(strings.Replace(benchmarkLoopFixture, "b.ReportAllocs()", "state := struct{ total int }{}", 1), "{ work() }", "{ state.total++; work() }", 1)},
 		{"indexed result accumulator", strings.Replace(strings.Replace(benchmarkLoopFixture, "b.ReportAllocs()", "total := []int{0}", 1), "{ work() }", "{ total[0]++; work() }", 1)},
 		{"panic", strings.Replace(benchmarkLoopFixture, "{ work() }", "{ work(); panic(\"stop\") }", 1)},
+		{"parenthesized panic", strings.Replace(benchmarkLoopFixture, "{ work() }", "{ work(); ((panic))(\"stop\") }", 1)},
+		{"parenthesized setup panic", strings.Replace(benchmarkLoopFixture, "b.ReportAllocs()", "(panic)(\"stop\")", 1)},
+		{"parenthesized goexit", strings.Replace(strings.Replace(benchmarkLoopFixture, `import "testing"`, `import "testing"; import rt "runtime"`, 1), "{ work() }", "{ work(); ((rt.Goexit))() }", 1)},
+		{"exit", strings.Replace(strings.Replace(benchmarkLoopFixture, `import "testing"`, `import "testing"; import "os"`, 1), "{ work() }", "{ work(); os.Exit(0) }", 1)},
+		{"parenthesized exit", strings.Replace(strings.Replace(benchmarkLoopFixture, `import "testing"`, `import "testing"; import "os"`, 1), "{ work() }", "{ work(); (os.Exit)(0) }", 1)},
 		{"goexit", strings.Replace(strings.Replace(benchmarkLoopFixture, `import "testing"`, `import "testing"; import "runtime"`, 1), "{ work() }", "{ work(); runtime.Goexit() }", 1)},
 		{"post loop work", strings.Replace(benchmarkLoopFixture, "{ work() }", "{ work() }; work()", 1)},
 		{"post reset setup", strings.Replace(benchmarkLoopFixture, "b.ResetTimer()", "b.ResetTimer(); work()", 1)},
@@ -222,4 +227,33 @@ func TestBenchmarkLoopTestOnlyPackage(t *testing.T) {
 			require.Len(t, offenses, 1)
 		})
 	}
+}
+
+func TestBenchmarkLoopHealthyPackagesSurviveLoadErrors(t *testing.T) {
+	t.Parallel()
+	for _, pkg := range []string{"excluded", "excluded_test"} {
+		t.Run(pkg, func(t *testing.T) {
+			t.Parallel()
+			offenses := coptest.RunProgram(t, NewLintBenchmarkLoop(cop.WithScope(cop.Not(cop.UnderDir("excluded")))), coptest.ProgramFiles{
+				"go.mod":               "module example.test\n\ngo 1.26\n",
+				"sample_test.go":       benchmarkLoopFixture,
+				"excluded/fixture.go":  "package excluded\n",
+				"excluded/bad_test.go": "package " + pkg + "\nvar broken = undefined\n",
+			})
+			require.Len(t, offenses, 2)
+			assert.Contains(t, offenses[0].Message, "cannot inspect benchmark tests")
+			assert.Contains(t, offenses[1].Message, "consider for b.Loop()")
+			assert.Equal(t, 7, offenses[1].Pos.Line)
+		})
+	}
+}
+
+func TestBenchmarkLoopSkipsFailedTestVariants(t *testing.T) {
+	t.Parallel()
+	offenses := coptest.RunProgram(t, NewLintBenchmarkLoop(), coptest.ProgramFiles{
+		"go.mod":         "module example.test\n\ngo 1.26\n",
+		"sample_test.go": benchmarkLoopFixture + "\nvar broken = undefined\n",
+	})
+	require.Len(t, offenses, 1)
+	assert.Contains(t, offenses[0].Message, "cannot inspect benchmark tests")
 }

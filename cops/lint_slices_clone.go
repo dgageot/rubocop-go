@@ -12,35 +12,7 @@ import (
 // NewLintSlicesClone suggests shallow copies, including in typed tests.
 // Rewrites must preserve nilness, destination types, and capacity contracts.
 func NewLintSlicesClone(opts ...cop.FuncOption) *prog.Func {
-	fileCop := newSlicesCloneFile(opts...)
-	return &prog.Func{
-		Meta: fileCop.Meta,
-		Run: func(p *prog.Pass) {
-			pkgs, err := loadModernizationPackages(p)
-			if err != nil {
-				p.Reportf(token.NoPos, "cannot inspect slice copies: %v", err)
-				return
-			}
-			seen := make(map[string]bool)
-			for _, pkg := range pkgs {
-				if pkg.IllTyped {
-					continue
-				}
-				for _, file := range pkg.Syntax {
-					pass := &cop.Pass{Cop: fileCop, FileSet: p.Program.Fset, File: file, Info: pkg.TypesInfo, Package: pkg.Types}
-					filename := p.Program.Fset.PositionFor(file.Package, false).Filename
-					if seen[filename] || !fileCop.InScope(pass) {
-						continue
-					}
-					seen[filename] = true
-					fileCop.Check(pass)
-					for _, offense := range pass.Offenses() {
-						p.ReportOffense(offense)
-					}
-				}
-			}
-		},
-	}
+	return modernizationProgram(newSlicesCloneFile(opts...))
 }
 
 func newSlicesCloneFile(opts ...cop.FuncOption) *cop.Func {

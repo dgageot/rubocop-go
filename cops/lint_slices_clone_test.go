@@ -113,3 +113,57 @@ func TestSlicesCloneRetainsHealthyPackagesWithBrokenTests(t *testing.T) {
 	}
 	assert.ElementsMatch(t, []string{"good", "tests"}, got)
 }
+
+func TestSlicesCloneRequiresAllHealthyVariants(t *testing.T) {
+	t.Parallel()
+	const appendClone = `package p
+func f(s []int) []int { return append([]int(nil), s...) }
+`
+	const makeCopy = `package p
+func f(s []int) []int { d := make([]int, len(s)); copy(d, s); return d }
+`
+	for _, tc := range []struct {
+		name, source, shadow string
+	}{
+		{"append", appendClone, "func append([]int, ...int) []int { return []int{99} }"},
+		{"nil", appendClone, "var nil = []int{99}"},
+		{"copy", makeCopy, "func copy([]int, []int) int { return 0 }"},
+		{"len", makeCopy, "func len([]int) int { return 99 }"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			offenses := coptest.RunProgram(t, NewLintSlicesClone(), coptest.ProgramFiles{
+				"go.mod":             "module example.test\n\ngo 1.26\n",
+				"shadowed/p.go":      tc.source,
+				"shadowed/p_test.go": "package p\n" + tc.shadow,
+				"healthy/p.go":       appendClone,
+				"healthy/p_test.go":  "package p\n",
+				"testonly/p_test.go": tc.source,
+				"testonly/q_test.go": "package p\n" + tc.shadow,
+				"external/p_test.go": "package p_test\nfunc f(s []int) []int { return append([]int{}, s...) }",
+			})
+			require.Len(t, offenses, 2)
+			var got []string
+			for _, offense := range offenses {
+				got = append(got, filepath.Base(filepath.Dir(offense.Pos.Filename)))
+			}
+			assert.ElementsMatch(t, []string{"healthy", "external"}, got)
+		})
+	}
+}
+
+func TestSlicesCloneShadowedMakeInBrokenVariant(t *testing.T) {
+	t.Parallel()
+	const makeCopy = `package p
+func f(s []int) []int { d := make([]int, len(s)); copy(d, s); return d }
+`
+	// A shadowed make cannot accept a type argument, so these test variants are ill-typed.
+	offenses := coptest.RunProgram(t, NewLintSlicesClone(), coptest.ProgramFiles{
+		"go.mod":               "module example.test\n\ngo 1.26\n",
+		"production/p.go":      makeCopy,
+		"production/p_test.go": "package p\nfunc make(any, int) []int { return []int{99} }",
+		"testonly/p_test.go":   makeCopy,
+		"testonly/q_test.go":   "package p\nfunc make(any, int) []int { return []int{99} }",
+	})
+	require.Len(t, offenses, 1)
+	assert.Equal(t, "production", filepath.Base(filepath.Dir(offenses[0].Pos.Filename)))
+}

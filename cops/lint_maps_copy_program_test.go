@@ -1,6 +1,9 @@
 package cops
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -28,4 +31,91 @@ func TestMapsCopyProgram(t *testing.T) {
 		assert.Equal(t, "Lint/MapsCopy", offense.CopName)
 		assert.Greater(t, offense.End.Offset, offense.Pos.Offset)
 	}
+}
+
+func TestMapsCopyGenericProgram(t *testing.T) {
+	t.Parallel()
+	const src = `package p
+ type Constraint[K comparable, V any] interface { ~map[K]V }
+ func f[M Constraint[K, V], K comparable, V any](dst, src M) {
+  for k, v := range src { dst[k] = v }
+ }`
+	offenses := coptest.RunProgram(t, NewLintMapsCopy(), coptest.ProgramFiles{
+		"go.mod":                  "module example.test\n\ngo 1.26\n",
+		"sample.go":               src,
+		"internal/sample_test.go": src,
+		"external/sample_test.go": strings.Replace(src, "package p", "package p_test", 1),
+	})
+	require.Len(t, offenses, 3)
+	for _, offense := range offenses {
+		assert.Equal(t, "Lint/MapsCopy", offense.CopName)
+	}
+}
+
+func TestMapsCopyGenericSemantics(t *testing.T) {
+	t.Parallel()
+	const src = `package p
+import (
+ "maps"
+ "math"
+ "testing"
+)
+func copyLoop[M ~map[K]V, K comparable, V any](dst, src M) {
+ for k, v := range src { dst[k] = v }
+}
+func copyStdlib[M ~map[K]V, K comparable, V any](dst, src M) {
+ maps.Copy(dst, src)
+}
+type namedMap map[string][]int
+type otherMap map[string][]int
+func copyDistinct[D, S ~map[K]V, K comparable, V any](dst D, src S) {
+ for k, v := range src { dst[k] = v }
+}
+func copyDistinctStdlib[D, S ~map[K]V, K comparable, V any](dst D, src S) {
+ maps.Copy(dst, src)
+}
+func TestSemantics(t *testing.T) {
+ for _, copy := range []func(namedMap, namedMap){copyLoop[namedMap], copyStdlib[namedMap]} {
+  var nilMap namedMap
+  copy(nilMap, nilMap)
+  copy(nilMap, namedMap{})
+  if nilMap != nil { t.Fatal("nil destination initialized") }
+  src := namedMap{"key": {1}}
+  dst := namedMap{"key": {0}, "kept": {2}}
+  copy(dst, src)
+  if dst["key"][0] != 1 || dst["kept"][0] != 2 { t.Fatal("overwrite or merge changed") }
+  src["key"][0] = 3
+  if dst["key"][0] != 3 { t.Fatal("copy is no longer shallow") }
+  copy(dst, dst)
+  if len(dst) != 2 { t.Fatal("self-copy changed entries") }
+  panicked := false
+  func() {
+   defer func() { panicked = recover() != nil }()
+   copy(nilMap, src)
+  }()
+  if !panicked { t.Fatal("write to nil map must panic") }
+ }
+ for _, copy := range []func(namedMap, otherMap){copyDistinct[namedMap, otherMap], copyDistinctStdlib[namedMap, otherMap]} {
+  dst := namedMap{}
+  copy(dst, otherMap{"key": {4}})
+  if dst["key"][0] != 4 { t.Fatal("distinct map types changed copy") }
+ }
+ for _, copy := range []func(map[float64]int, map[float64]int){copyLoop[map[float64]int], copyStdlib[map[float64]int]} {
+  src := map[float64]int{math.NaN(): 1, 0: 2}
+  dst := map[float64]int{}
+  copy(dst, src)
+  if len(dst) != 2 || dst[0] != 2 { t.Fatal("NaN entry lost") }
+  copy(src, src)
+  if len(src) < 3 || src[0] != 2 { t.Fatal("NaN self-copy lost entries") }
+ }
+}
+`
+	require.Len(t, runExtractedTypedCop(t, newMapsCopyFile(), src), 2)
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.test\n\ngo 1.26\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "copy_test.go"), []byte(src), 0o600))
+	cmd := exec.CommandContext(t.Context(), "go", "test", "-p", "1", "-parallel", "2", "./...")
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", output)
 }

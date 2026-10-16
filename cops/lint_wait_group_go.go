@@ -74,7 +74,8 @@ func checkWaitGroupGo(p *cop.Pass, stmts []ast.Stmt) {
 		if !ok || len(done.Call.Args) != 0 || waitGroupGoReceiver(p.Info, done.Call, "Done") != recv {
 			continue
 		}
-		if !waitGroupGoStable(p.Info, p.File, recv) || !waitGroupGoBody(p.Info, fn.Body, recv) {
+		receivers := waitGroupGoAliases(p.Info, p.File, recv)
+		if !waitGroupGoStable(p.Info, p.File, receivers) || !waitGroupGoBody(p.Info, fn.Body, receivers) {
 			continue
 		}
 		p.ReportAt(stmt.Pos(), launch.End(), "consider wg.Go for this WaitGroup pattern; the callback must not let a panic escape; verify receiver stability, captures, and timing before changing it")
@@ -115,9 +116,58 @@ func waitGroupGoReceiver(info *types.Info, call *ast.CallExpr, method string) *t
 	return recv
 }
 
+// Direct aliases may expose the same group under another name, including
+// aliases declared before the receiver. Treat copies conservatively as aliases.
+func waitGroupGoAliases(info *types.Info, file *ast.File, recv *types.Var) map[*types.Var]bool {
+	links := make(map[*types.Var][]*types.Var)
+	link := func(lhs, rhs ast.Expr) {
+		left, leftOK := ast.Unparen(lhs).(*ast.Ident)
+		right, rightOK := ast.Unparen(rhs).(*ast.Ident)
+		if !leftOK || !rightOK || left.Name == "_" || right.Name == "_" {
+			return
+		}
+		a, aOK := info.ObjectOf(left).(*types.Var)
+		b, bOK := info.ObjectOf(right).(*types.Var)
+		if aOK && bOK {
+			links[a] = append(links[a], b)
+			links[b] = append(links[b], a)
+		}
+	}
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.AssignStmt:
+			if len(node.Lhs) == len(node.Rhs) {
+				for i, lhs := range node.Lhs {
+					link(lhs, node.Rhs[i])
+				}
+			}
+		case *ast.ValueSpec:
+			if len(node.Names) == len(node.Values) {
+				for i, name := range node.Names {
+					link(name, node.Values[i])
+				}
+			}
+		}
+		return true
+	})
+	receivers := map[*types.Var]bool{recv: true}
+	pending := []*types.Var{recv}
+	for len(pending) > 0 {
+		current := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		for _, alias := range links[current] {
+			if !receivers[alias] {
+				receivers[alias] = true
+				pending = append(pending, alias)
+			}
+		}
+	}
+	return receivers
+}
+
 // Assignments anywhere in the file include writes by other capturing closures.
 // Taking the variable's address can hide such writes behind an alias.
-func waitGroupGoStable(info *types.Info, file *ast.File, recv *types.Var) bool {
+func waitGroupGoStable(info *types.Info, file *ast.File, receivers map[*types.Var]bool) bool {
 	stable := true
 	ast.Inspect(file, func(n ast.Node) bool {
 		if !stable {
@@ -126,7 +176,7 @@ func waitGroupGoStable(info *types.Info, file *ast.File, recv *types.Var) bool {
 		switch node := n.(type) {
 		case *ast.AssignStmt:
 			for _, lhs := range node.Lhs {
-				if waitGroupGoUses(info, lhs, recv) {
+				if waitGroupGoUses(info, lhs, receivers) {
 					stable = false
 					break
 				}
@@ -134,17 +184,19 @@ func waitGroupGoStable(info *types.Info, file *ast.File, recv *types.Var) bool {
 		case *ast.RangeStmt:
 			// Range bindings can be reused in files targeting older Go syntax.
 			for _, expr := range []ast.Expr{node.Key, node.Value} {
-				if waitGroupGoUses(info, expr, recv) {
+				if waitGroupGoUses(info, expr, receivers) {
 					stable = false
 					break
 				}
-				if id, ok := expr.(*ast.Ident); ok && info.ObjectOf(id) == recv {
-					stable = false
-					break
+				if id, ok := expr.(*ast.Ident); ok {
+					if variable, ok := info.ObjectOf(id).(*types.Var); ok && receivers[variable] {
+						stable = false
+						break
+					}
 				}
 			}
 		case *ast.UnaryExpr:
-			if node.Op == token.AND && waitGroupGoUses(info, node.X, recv) {
+			if node.Op == token.AND && waitGroupGoUses(info, node.X, receivers) {
 				stable = false
 			}
 		}
@@ -153,10 +205,10 @@ func waitGroupGoStable(info *types.Info, file *ast.File, recv *types.Var) bool {
 	return stable
 }
 
-func waitGroupGoBody(info *types.Info, body *ast.BlockStmt, recv *types.Var) bool {
+func waitGroupGoBody(info *types.Info, body *ast.BlockStmt, receivers map[*types.Var]bool) bool {
 	// Restrict receiver use to the first defer, including in nested closures.
 	for _, stmt := range body.List[1:] {
-		if waitGroupGoUses(info, stmt, recv) {
+		if waitGroupGoUses(info, stmt, receivers) {
 			return false
 		}
 	}
@@ -179,14 +231,16 @@ func waitGroupGoBody(info *types.Info, body *ast.BlockStmt, recv *types.Var) boo
 	return safe
 }
 
-func waitGroupGoUses(info *types.Info, node ast.Node, recv *types.Var) bool {
+func waitGroupGoUses(info *types.Info, node ast.Node, receivers map[*types.Var]bool) bool {
 	if node == nil {
 		return false
 	}
 	used := false
 	ast.Inspect(node, func(n ast.Node) bool {
-		if id, ok := n.(*ast.Ident); ok && info.Uses[id] == recv {
-			used = true
+		if id, ok := n.(*ast.Ident); ok {
+			if variable, ok := info.Uses[id].(*types.Var); ok && receivers[variable] {
+				used = true
+			}
 		}
 		return !used
 	})

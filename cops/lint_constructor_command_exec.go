@@ -29,7 +29,7 @@ func newConstructorCommandExecFile(opts ...cop.FuncOption) *cop.Func {
 				if !isConstructor(fn) || fn.Body == nil {
 					return
 				}
-				inspectCommandConstruction(p.Info, fn.Body, func(call *ast.CallExpr) {
+				forEachTypedConstructionCall(p.Info, fn.Body, func(call *ast.CallExpr) {
 					if name, ok := constructorCommandCall(p.Info, call); ok {
 						p.Reportf(call, "constructor %s calls %s; move command setup/execution behind an explicit method so process side effects are deliberate", fn.Name.Name, name)
 					}
@@ -57,43 +57,4 @@ func constructorCommandCall(info *types.Info, call *ast.CallExpr) (string, bool)
 	default:
 		return "", false
 	}
-}
-
-// Keep this type-aware traversal local: other lifecycle cops use syntactic walks.
-func inspectCommandConstruction(info *types.Info, root ast.Node, visit func(*ast.CallExpr)) {
-	ast.Inspect(root, func(n ast.Node) bool {
-		if expr, ok := n.(ast.Expr); ok && info != nil && info.Types[expr].Value != nil {
-			return false // Includes constant len/cap calls with unevaluated operands.
-		}
-		switch node := n.(type) {
-		case *ast.FuncLit:
-			return false
-		case *ast.GoStmt:
-			// Receivers and arguments are evaluated before the goroutine starts.
-			inspectCommandConstruction(info, node.Call.Fun, visit)
-			for _, arg := range node.Call.Args {
-				inspectCommandConstruction(info, arg, visit)
-			}
-			return false
-		case *ast.CallExpr:
-			if info != nil {
-				obj := typeutil.Callee(info, node)
-				if obj != nil && obj.Pkg() != nil && obj.Pkg().Path() == "unsafe" {
-					switch obj.Name() {
-					case "Sizeof", "Alignof", "Offsetof":
-						return false // Generic operands need not produce constants.
-					}
-				}
-			}
-			visit(node)
-			if literal := calledFuncLit(node.Fun); literal != nil {
-				for _, arg := range node.Args {
-					inspectCommandConstruction(info, arg, visit)
-				}
-				inspectCommandConstruction(info, literal.Body, visit)
-				return false
-			}
-		}
-		return true
-	})
 }

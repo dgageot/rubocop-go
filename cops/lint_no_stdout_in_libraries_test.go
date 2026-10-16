@@ -70,3 +70,25 @@ func f() { fmt.Println("hello") }
 `
 	assert.Len(t, coptest.RunNamed(t, NewLintNoStdoutInLibraries(), "cmd/root/root.go", src), 1)
 }
+
+func TestNoStdoutInLibrariesParentheses(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		call string
+		want int
+	}{
+		{`(fmt.Print)("hello")`, 1},
+		{`((fmt.Printf))("hello")`, 1},
+		{`(fmt.Println)("hello")`, 1},
+		{`fmt.Fprint((os.Stdout), "hello")`, 1},
+		{`fmt.Fprintf(((os.Stdout)), "hello")`, 1},
+		{`(fmt.Fprintln)(((os.Stdout)), "hello")`, 1},
+		{`fmt.Fprintln((os.Stderr), "hello")`, 0},
+		{`fmt.Fprintln((out), "hello")`, 0},
+	} {
+		t.Run(tc.call, func(t *testing.T) {
+			src := "package p\nimport (\"fmt\"; \"os\"; \"io\")\nfunc f(out io.Writer) { " + tc.call + " }"
+			assert.Len(t, coptest.RunNamed(t, NewLintNoStdoutInLibraries(), "pkg/p/p.go", src), tc.want)
+		})
+	}
+}

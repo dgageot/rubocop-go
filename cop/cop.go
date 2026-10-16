@@ -161,7 +161,7 @@ func (p *Pass) Offenses() []Offense {
 
 // Filename returns the path of the file being inspected.
 func (p *Pass) Filename() string {
-	return p.FileSet.Position(p.File.Package).Filename
+	return p.FileSet.PositionFor(p.File.Package, false).Filename
 }
 
 // PackageName returns the declared package name of the file.
@@ -185,10 +185,15 @@ func (p *Pass) GoVersion() string {
 }
 
 // StdlibVersion returns the target Go version for standard-library APIs, or ""
-// if unknown. It is the higher valid version of [Pass.GoVersion] and the package's
-// Go version, never the running toolchain's version.
+// if unknown. It combines the explicit file and package requirements, never
+// the running toolchain or the type checker's minimum language-version floor.
 func (p *Pass) StdlibVersion() string {
 	v := p.GoVersion()
+	// go/types floors tagged files at go1.21, even for a go1.20 constraint.
+	// API availability follows the actual constraint, not that language floor.
+	if p.File != nil && version.IsValid(p.File.GoVersion) {
+		v = p.File.GoVersion
+	}
 	if !version.IsValid(v) {
 		v = ""
 	}

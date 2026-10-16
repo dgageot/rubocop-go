@@ -19,12 +19,16 @@ func NewLintErrorStringMatching(opts ...cop.FuncOption) *cop.Func {
 		},
 		Types: true,
 		Run: func(p *cop.Pass) {
-			if p.IsTestFile() {
+			if p.Info == nil || p.IsTestFile() {
 				return
 			}
 
 			p.ForEachCall(func(call *ast.CallExpr) {
-				if !cop.IsCallTo(call, "strings", "Contains", "HasPrefix", "HasSuffix") || len(call.Args) == 0 {
+				fn, ok := p.CalleeObject(call).(*types.Func)
+				if !ok || fn.Pkg() == nil || fn.Pkg().Path() != "strings" || len(call.Args) != 2 {
+					return
+				}
+				if fn.Name() != "Contains" && fn.Name() != "HasPrefix" && fn.Name() != "HasSuffix" {
 					return
 				}
 				if errorStringReceiver(p, call.Args[0]) == nil {
@@ -37,21 +41,23 @@ func NewLintErrorStringMatching(opts ...cop.FuncOption) *cop.Func {
 }
 
 func errorStringReceiver(p *cop.Pass, expr ast.Expr) ast.Expr {
-	call, ok := expr.(*ast.CallExpr)
+	call, ok := ast.Unparen(expr).(*ast.CallExpr)
 	if !ok || len(call.Args) != 0 {
 		return nil
 	}
-	sel, ok := call.Fun.(*ast.SelectorExpr)
+	sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
 	if !ok || sel.Sel.Name != "Error" {
 		return nil
 	}
 
-	errorType, ok := types.Universe.Lookup("error").Type().Underlying().(*types.Interface)
-	if !ok {
+	selection := p.Info.Selections[sel]
+	if selection == nil || selection.Kind() != types.MethodVal {
 		return nil
 	}
-	receiverType := p.Info.TypeOf(sel.X)
-	if receiverType == nil || !types.Implements(receiverType, errorType) {
+	// The selected method accounts for implicit address-taking and promotion.
+	sig, ok := selection.Obj().Type().(*types.Signature)
+	if !ok || sig.Variadic() || sig.Params().Len() != 0 || sig.Results().Len() != 1 ||
+		!types.Identical(sig.Results().At(0).Type(), types.Typ[types.String]) {
 		return nil
 	}
 	return sel.X

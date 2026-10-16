@@ -99,3 +99,40 @@ func f(t sdk.Ternary) {
 	}
 	assert.ElementsMatch(t, []int{17, 18, 19, 20, 21, 22, 23, 23, 24, 25, 26, 27}, lines)
 }
+
+func TestPointerHelperRequiresScalarSignature(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, helper, call string
+		want               int
+	}{
+		{"scalar", "func String(v string) *string { return &v }", `sdk.String("x")`, 1},
+		{"aliases", "type Text = string; type Pointer = *Text; func String(v Text) Pointer { return &v }", `sdk.String("x")`, 1},
+		{"generic explicit", "func String[T ~string](v T) *T { return &v }", `sdk.String[Name](Name("x"))`, 0},
+		{"generic inferred", "func String[T ~string](v T) *T { return &v }", `sdk.String(Name("x"))`, 0},
+		{"generic fixed signature", "func String[T any](v string) *string { return &v }", `sdk.String[int]("x")`, 0},
+		{"wrong parameter", "func String(v int) *string { return nil }", "sdk.String(1)", 0},
+		{"named parameter", "type Text string; func String(v Text) *string { return nil }", `sdk.String("x")`, 0},
+		{"wrong result", "func String(v string) *int { return nil }", `sdk.String("x")`, 0},
+		{"named result element", "type Text string; func String(v string) *Text { return nil }", `sdk.String("x")`, 0},
+		{"named pointer", "type Pointer *string; func String(v string) Pointer { return nil }", `sdk.String("x")`, 0},
+		{"nonpointer result", "func String(v string) string { return v }", `sdk.String("x")`, 0},
+		{"multiple results", "func String(v string) (*string, error) { return &v, nil }", `sdk.String("x")`, 0},
+		{"variadic", "func String(v ...string) *string { return &v[0] }", `sdk.String("x")`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assignment := "_ = "
+			if tc.name == "multiple results" {
+				assignment = "_, _ = "
+			}
+			offenses := coptest.RunProgram(t, NewLintPointerHelper(), coptest.ProgramFiles{
+				"go.mod":             "module example.test\n\ngo 1.26\nrequire github.com/aws/aws-sdk-go-v2 v0.0.0\nreplace github.com/aws/aws-sdk-go-v2 => ./aws\n",
+				"aws/go.mod":         "module github.com/aws/aws-sdk-go-v2\n\ngo 1.26\n",
+				"aws/aws/pointer.go": "package aws\n" + tc.helper + "\n",
+				"pointer.go":         "package p\nimport sdk \"github.com/aws/aws-sdk-go-v2/aws\"\ntype Name string\nfunc f() { " + assignment + tc.call + " }\n",
+			})
+			assert.Len(t, offenses, tc.want)
+		})
+	}
+}

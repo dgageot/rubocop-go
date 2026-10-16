@@ -2,9 +2,10 @@ package cops
 
 import (
 	"go/ast"
-	"go/token"
 	"go/types"
 	"strconv"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/dgageot/rubocop-go/cop"
 )
@@ -35,74 +36,118 @@ func NewLintWrapErrors(opts ...cop.FuncOption) *cop.Func {
 				return
 			}
 			p.ForEachCall(func(call *ast.CallExpr) {
-				if !cop.IsCallTo(call, "fmt", "Errorf") || len(call.Args) < 2 {
+				fn, ok := p.CalleeObject(call).(*types.Func)
+				if !ok || fn.Pkg() == nil || fn.Pkg().Path() != "fmt" || fn.Name() != "Errorf" || len(call.Args) < 2 || call.Ellipsis.IsValid() {
 					return
 				}
-				format, ok := stringLit(call.Args[0])
-				if !ok {
-					return
-				}
-				if hasWrapVerb(format) {
-					return // already wrapping at least one error
-				}
-				for _, arg := range call.Args[1:] {
-					if isErrorType(p.Info.TypeOf(arg)) {
-						p.Report(call, "fmt.Errorf interpolates an error without %w — wrap it so errors.Is/As keep working")
-						return
-					}
+				format, ok := p.StringValue(call.Args[0])
+				if ok && formatInterpolatesError(p.Info, format, call.Args[1:]) {
+					p.Report(call, "fmt.Errorf interpolates an error without %w — wrap it so errors.Is/As keep working")
 				}
 			})
 		},
 	}, opts...)
 }
 
-// hasWrapVerb reports whether format contains a real %w verb, ignoring
-// escaped percent signs. A naive strings.Contains(format, "%w") would treat
-// the literal "%%w" (an escaped percent followed by the letter w) as a
-// wrapping verb and silence a genuinely unwrapped error.
-//
-// Flags, width, precision, and argument indices between the percent and the
-// verb letter are skipped, so forms like %-10w, %[1]w, and %3.2w are also
-// recognised as wrap verbs.
-func hasWrapVerb(format string) bool {
-	for i := 0; i < len(format); i++ {
-		if format[i] != '%' || i+1 >= len(format) {
+// formatInterpolatesError tracks operands separately from width and precision.
+// Percent verbs consume no operand, and %T and %p do not render error text.
+// Malformed directives are left to format-string diagnostics.
+func formatInterpolatesError(info *types.Info, format string, args []ast.Expr) bool {
+	arg, interpolates := 0, false
+	for i := 0; i < len(format); {
+		if format[i] != '%' {
+			i++
 			continue
 		}
-		if format[i+1] == '%' {
-			i++ // consume the escaped percent so "%%w" is not read as a verb
+		i++
+		for i < len(format) && strings.ContainsRune("#0+- ", rune(format[i])) {
+			i++
+		}
+		var indexed, ok bool
+		valid := true
+		arg, i, indexed, ok = formatArgIndex(format, i, arg, len(args))
+		if !ok {
+			return false
+		}
+		if i < len(format) && format[i] == '*' {
+			arg++
+			i++
+			indexed = false
+		} else {
+			start := i
+			for i < len(format) && format[i] >= '0' && format[i] <= '9' {
+				i++
+			}
+			if indexed && i != start {
+				valid = false // Only the percent verb accepts an index before a width.
+			}
+		}
+		if i+1 < len(format) && format[i] == '.' {
+			if indexed {
+				valid = false
+			}
+			i++
+			arg, i, indexed, ok = formatArgIndex(format, i, arg, len(args))
+			if !ok {
+				return false
+			}
+			if i < len(format) && format[i] == '*' {
+				arg++
+				i++
+				indexed = false
+			} else {
+				for i < len(format) && format[i] >= '0' && format[i] <= '9' {
+					i++
+				}
+			}
+		}
+		if !indexed {
+			arg, i, _, ok = formatArgIndex(format, i, arg, len(args))
+			if !ok {
+				return false
+			}
+		}
+		if i >= len(format) {
+			return false
+		}
+		verb, size := utf8.DecodeRuneInString(format[i:])
+		i += size
+		if verb == '%' {
 			continue
 		}
-		// Skip flags, width, precision, and [n] argument indices to reach
-		// the verb letter that terminates the directive.
-		j := i + 1
-		for j < len(format) && !isLetter(format[j]) {
-			j++
+		if !valid || arg >= len(args) {
+			return false
 		}
-		if j < len(format) && format[j] == 'w' {
-			return true
+		if verb == 'w' {
+			return false // Preserve the policy of allowing one wrapped error per call.
 		}
+		if verb != 'T' && verb != 'p' && isErrorType(info.TypeOf(args[arg])) {
+			interpolates = true
+		}
+		arg++
 	}
-	return false
+	return interpolates
 }
 
-// isLetter reports whether b is an ASCII letter, the set of bytes fmt uses
-// for verbs.
-func isLetter(b byte) bool {
-	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
-}
-
-// stringLit returns the unquoted value of a string-literal expression.
-func stringLit(expr ast.Expr) (string, bool) {
-	lit, ok := expr.(*ast.BasicLit)
-	if !ok || lit.Kind != token.STRING {
-		return "", false
+func formatArgIndex(format string, i, arg, count int) (int, int, bool, bool) {
+	if i >= len(format) || format[i] != '[' {
+		return arg, i, false, true
 	}
-	val, err := strconv.Unquote(lit.Value)
-	if err != nil {
-		return "", false
+	end := strings.IndexByte(format[i:], ']')
+	if end < 0 {
+		return arg, i, false, false
 	}
-	return val, true
+	digits := format[i+1 : i+end]
+	for _, digit := range digits {
+		if digit < '0' || digit > '9' {
+			return arg, i, false, false
+		}
+	}
+	index, err := strconv.Atoi(digits)
+	if err != nil || index < 1 || index > count {
+		return arg, i, false, false
+	}
+	return index - 1, i + end + 1, true, true
 }
 
 // isErrorType reports whether t is exactly the built-in error interface.

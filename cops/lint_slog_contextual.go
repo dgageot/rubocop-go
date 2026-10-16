@@ -20,14 +20,14 @@ import (
 // The rule fires when the cop can syntactically see a context name in the
 // call's enclosing function:
 //
-//   - a parameter or named result whose type is `context.Context`;
+//   - a named, nonblank parameter or result whose type is `context.Context`;
 //   - a local var declared from a context-producing expression (e.g.
 //     `ctx := cmd.Context()`, `ctx := context.Background()`, or the first
 //     return of `context.WithCancel(...)` / `context.WithTimeout(...)`).
 //
-// Function literals inherit context names from every enclosing function,
-// so a `defer func() { slog.Error(...) }()` inside a function that holds
-// a ctx is flagged.
+// Function literals, including package-level callbacks, are checked too.
+// Nested literals inherit context names from every enclosing function, so a
+// `defer func() { slog.Error(...) }()` inside a function that holds a ctx is flagged.
 //
 // Convention: declare the context near the top of the function so that
 // every later log statement sees it. Helpers without an in-scope context
@@ -43,8 +43,8 @@ func NewLintSlogContextual(opts ...cop.FuncOption) *cop.Func {
 			Severity:    cop.Warning,
 		},
 		Run: func(p *cop.Pass) {
-			p.ForEachFunc(func(fn *ast.FuncDecl) {
-				cop.WalkFuncWithContextScope(fn.Type, fn.Body, false, func(n ast.Node, hasContext bool) bool {
+			walk := func(typ *ast.FuncType, body *ast.BlockStmt) {
+				cop.WalkFuncWithContextScope(typ, body, false, func(n ast.Node, hasContext bool) bool {
 					if !hasContext {
 						return true
 					}
@@ -64,6 +64,17 @@ func NewLintSlogContextual(opts ...cop.FuncOption) *cop.Func {
 						level, level)
 					return true
 				})
+			}
+			ast.Inspect(p.File, func(n ast.Node) bool {
+				switch fn := n.(type) {
+				case *ast.FuncDecl:
+					walk(fn.Type, fn.Body)
+					return false
+				case *ast.FuncLit:
+					walk(fn.Type, fn.Body)
+					return false
+				}
+				return true
 			})
 		},
 	}, opts...)

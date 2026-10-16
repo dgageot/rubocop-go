@@ -291,3 +291,59 @@ func TestStdlibUUIDLiteralSurvivesRandomnessLoadError(t *testing.T) {
 	assert.Contains(t, offenses[0].Message, "cannot check UUID randomness")
 	assertUUIDLiteralOnly(t, offenses[1:])
 }
+
+func TestStdlibUUIDCallTiming(t *testing.T) {
+	requireGo127(t)
+	t.Parallel()
+	files := uuidRandomnessFiles()
+	files["uuid.go"] = `package p
+import id "github.com/google/uuid"
+func consume(...string) {}
+func IDs() {
+ defer id.NewString()
+ defer (id.NewString)()
+ go id.NewString()
+ go ((id.NewString))()
+ defer consume(id.NewString())
+ go consume((id.NewString)())
+ defer id.NewStringWithArgument(id.NewString())
+ go id.NewStringWithArgument(id.NewString())
+ id.NewString()
+ _ = (id.NewString)()
+ defer id.New().String()
+ go (id.New().String)()
+ defer id.MustParse("6f0c2a1e-8d4b-4c7f-9a3e-2b5d7e9f1c03").String()
+ go id.MustParse("6f0c2a1e-8d4b-4c7f-9a3e-2b5d7e9f1c03").String()
+}
+`
+	files["google/uuid.go"] += "\nfunc NewStringWithArgument(string) {}\n"
+	offenses := coptest.RunProgram(t, NewLintStdlibUUID(), files)
+	require.Len(t, offenses, 10)
+	var lines []int
+	for _, offense := range offenses {
+		lines = append(lines, offense.Pos.Line)
+	}
+	assert.ElementsMatch(t, []int{9, 10, 11, 12, 13, 14, 15, 16, 17, 18}, lines)
+}
+
+func TestStdlibUUIDLiteralOnlySkipsRandomnessLoad(t *testing.T) {
+	requireGo127(t)
+	t.Parallel()
+	for _, calls := range []string{"", "defer uuid.NewString(); go (uuid.NewString)()"} {
+		t.Run(calls, func(t *testing.T) {
+			t.Parallel()
+			files := uuidRandomnessFiles()
+			files["uuid.go"] = `package p
+import "github.com/google/uuid"
+func ID() string {
+ ` + calls + `
+ return uuid.MustParse("6f0c2a1e-8d4b-4c7f-9a3e-2b5d7e9f1c03").String()
+}
+`
+			files["excluded/uuid.go"] = "package excluded\nimport \"github.com/google/uuid\"\nvar ID = uuid.NewString()\n"
+			files["broken_test.go"] = "package p\nvar broken = undefined\n"
+			c := NewLintStdlibUUID(cop.WithScope(cop.Not(cop.UnderDir("excluded"))))
+			assertUUIDLiteralOnly(t, coptest.RunProgram(t, c, files))
+		})
+	}
+}

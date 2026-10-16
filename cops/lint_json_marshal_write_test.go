@@ -37,6 +37,8 @@ func TestJSONMarshalWrite(t *testing.T) {
 		src  string
 	}{
 		{"default escaping", jsonMarshalWriteFixture},
+		{"parenthesized encoder", strings.ReplaceAll(jsonMarshalWriteFixture, "json.NewEncoder(&buf)", "(json.NewEncoder)(&buf)")},
+		{"parenthesized trim", strings.ReplaceAll(jsonMarshalWriteFixture, "strings.TrimSuffix(", "(strings.TrimSuffix)(")},
 		{"disable escaping", strings.Replace(jsonMarshalWriteFixture, "if err :=", "enc.SetEscapeHTML(false); if err :=", 1)},
 		{"explicit escaping", strings.Replace(jsonMarshalWriteFixture, "if err :=", "enc.SetEscapeHTML(true); if err :=", 1)},
 		{"dynamic escaping", strings.Replace(strings.Replace(jsonMarshalWriteFixture, "value any", "value any, escape bool", 1), "if err :=", "enc.SetEscapeHTML(escape); if err :=", 1)},

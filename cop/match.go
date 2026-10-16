@@ -22,11 +22,11 @@ func IsSelector(expr ast.Expr, x, sel string) bool {
 // when expr has any other shape (e.g. nested selectors a.b.c, indexed
 // receivers, or call results).
 func MatchSelector(expr ast.Expr) (x, sel string, ok bool) {
-	se, isSel := expr.(*ast.SelectorExpr)
+	se, isSel := ast.Unparen(expr).(*ast.SelectorExpr)
 	if !isSel {
 		return "", "", false
 	}
-	id, isIdent := se.X.(*ast.Ident)
+	id, isIdent := ast.Unparen(se.X).(*ast.Ident)
 	if !isIdent {
 		return "", "", false
 	}
