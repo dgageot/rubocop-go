@@ -96,6 +96,7 @@ func (r *Runner) Run(paths []string) (int, error) {
 		// Group files by directory and type-check per package so type-aware
 		// cops can resolve symbols.
 		byDir := groupByDir(files)
+		imports := newImportResolver(files)
 
 		for dir, dirFiles := range byDir {
 			parsed, parsedPaths, ok := r.parseFiles(fset, dirFiles)
@@ -103,7 +104,7 @@ func (r *Runner) Run(paths []string) (int, error) {
 				continue
 			}
 
-			info, pkg := typeCheck(fset, dir, parsed)
+			info, pkg := typeCheckWithImporter(fset, dir, parsed, imports.resolve(dir, parsed))
 
 			for i, pf := range parsed {
 				fileOffenses := r.runCops(fset, pf, info, pkg)
@@ -292,6 +293,10 @@ func packagePattern(path string, recursive bool) string {
 // It uses a permissive configuration: errors are ignored so that cops can still
 // run on code with unresolved imports.
 func typeCheck(fset *token.FileSet, dir string, files []*ast.File) (*types.Info, *types.Package) {
+	return typeCheckWithImporter(fset, dir, files, resolveImports(dir, files))
+}
+
+func typeCheckWithImporter(fset *token.FileSet, dir string, files []*ast.File, imports types.Importer) (*types.Info, *types.Package) {
 	info := &types.Info{
 		Types:        make(map[ast.Expr]types.TypeAndValue),
 		Defs:         make(map[*ast.Ident]types.Object),
@@ -302,7 +307,7 @@ func typeCheck(fset *token.FileSet, dir string, files []*ast.File) (*types.Info,
 
 	cfg := &types.Config{
 		GoVersion: moduleGoVersion(dir),
-		Importer:  resolveImports(dir, files),
+		Importer:  imports,
 		// Ignore import errors — we just want the type info we can get.
 		Error: func(error) {},
 	}
