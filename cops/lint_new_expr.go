@@ -23,9 +23,15 @@ func NewLintNewExpr(opts ...cop.FuncOption) *cop.Func {
 			if p.Info == nil || ast.IsGenerated(p.File) {
 				return
 			}
-			uses := make(map[types.Object]int)
-			for _, obj := range p.Info.Uses {
-				uses[obj]++
+			var uses map[types.Object]int
+			countUses := func(variable types.Object) int {
+				if uses == nil {
+					uses = make(map[types.Object]int)
+					for _, obj := range p.Info.Uses {
+						uses[obj]++
+					}
+				}
+				return uses[variable]
 			}
 			shadowedNew := false
 			ast.Inspect(p.File, func(n ast.Node) bool {
@@ -44,11 +50,11 @@ func NewLintNewExpr(opts ...cop.FuncOption) *cop.Func {
 			ast.Inspect(p.File, func(n ast.Node) bool {
 				switch node := n.(type) {
 				case *ast.BlockStmt:
-					checkNewExpr(p, uses, node.List)
+					checkNewExpr(p, countUses, node.List)
 				case *ast.CaseClause:
-					checkNewExpr(p, uses, node.Body)
+					checkNewExpr(p, countUses, node.Body)
 				case *ast.CommClause:
-					checkNewExpr(p, uses, node.Body)
+					checkNewExpr(p, countUses, node.Body)
 				}
 				return true
 			})
@@ -56,7 +62,7 @@ func NewLintNewExpr(opts ...cop.FuncOption) *cop.Func {
 	}, opts...)
 }
 
-func checkNewExpr(p *cop.Pass, uses map[types.Object]int, stmts []ast.Stmt) {
+func checkNewExpr(p *cop.Pass, countUses func(types.Object) int, stmts []ast.Stmt) {
 	if len(stmts) < 2 {
 		return
 	}
@@ -66,7 +72,7 @@ func checkNewExpr(p *cop.Pass, uses map[types.Object]int, stmts []ast.Stmt) {
 		return
 	}
 	variable, ok := p.Info.Defs[id].(*types.Var)
-	if !ok || uses[variable] != 1 || variable.Parent() == nil {
+	if !ok || variable.Parent() == nil {
 		return
 	}
 	if _, literal := ast.Unparen(expr).(*ast.CompositeLit); literal {
@@ -93,7 +99,10 @@ func checkNewExpr(p *cop.Pass, uses map[types.Object]int, stmts []ast.Stmt) {
 			return
 		}
 	}
-	if found {
+	if !found {
+		return
+	}
+	if countUses(variable) == 1 {
 		p.Reportf(decl, "use new(expr) instead of declaring %s only to return &%s; keep the initializer unchanged", id.Name, id.Name)
 	}
 }

@@ -2,6 +2,7 @@ package cops
 
 import (
 	"bytes"
+	"fmt"
 	"go/ast"
 	"go/importer"
 	"go/parser"
@@ -240,4 +241,50 @@ func runNewExpr(t *testing.T, filename, src string) []cop.Offense {
 	pass := &cop.Pass{Cop: NewLintNewExpr(), FileSet: fset, File: file, Info: info, Package: pkg}
 	NewLintNewExpr().Check(pass)
 	return pass.Offenses()
+}
+
+func BenchmarkNewExprWithoutCandidates(b *testing.B) {
+	fset := token.NewFileSet()
+	var files []*ast.File
+	for i := range 100 {
+		src := fmt.Sprintf("package p\nfunc f%d(v int) int { return v + v + v + v }\n", i)
+		file, err := parser.ParseFile(fset, fmt.Sprintf("file%d.go", i), src, 0)
+		require.NoError(b, err)
+		files = append(files, file)
+	}
+	info := &types.Info{Types: make(map[ast.Expr]types.TypeAndValue), Defs: make(map[*ast.Ident]types.Object), Uses: make(map[*ast.Ident]types.Object)}
+	pkg, err := (&types.Config{GoVersion: "go1.26"}).Check("p", fset, files, info)
+	require.NoError(b, err)
+	check := NewLintNewExpr()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		for _, file := range files {
+			pass := &cop.Pass{Cop: check, FileSet: fset, File: file, Info: info, Package: pkg}
+			check.Check(pass)
+		}
+	}
+}
+
+func TestNewExprCountsAllUsesAfterFirstCandidate(t *testing.T) {
+	t.Parallel()
+	offenses := runNewExpr(t, "sample.go", `package p
+func candidates() *int {
+ if true { v := 1; return &v }
+ v := 2
+ return &v
+}
+func reused() *int {
+ v := 1
+ { alias := &v; _ = alias }
+ return &v
+}
+func repeated() (*int, *int) {
+ v := 1
+ return &v, &v
+}
+`)
+	require.Len(t, offenses, 2)
+	assert.Equal(t, 4, offenses[0].Pos.Line)
+	assert.Equal(t, 3, offenses[1].Pos.Line)
 }
