@@ -3,6 +3,7 @@ package cops
 import (
 	"go/ast"
 	"go/types"
+	"strings"
 
 	"golang.org/x/tools/go/types/typeutil"
 
@@ -13,17 +14,19 @@ import (
 // NewLintConstructorCommandExec keeps command setup and execution out of constructors.
 // Execution methods require resolved os/exec types; lazy closures are excluded.
 func NewLintConstructorCommandExec(opts ...cop.FuncOption) *prog.Func {
-	return prog.FromFile(newConstructorCommandExecFile(opts...))
+	return prog.FromFile(NewLintConstructorCommandExecFile(opts...))
 }
 
-func newConstructorCommandExecFile(opts ...cop.FuncOption) *cop.Func {
+// NewLintConstructorCommandExecFile is the file-based form for custom execution adapters.
+func NewLintConstructorCommandExecFile(opts ...cop.FuncOption) *cop.Func {
 	return configuredFileCop(&cop.Func{
 		Meta: cop.Meta{
 			Name:        "Lint/ConstructorCommandExec",
 			Description: "Avoid preparing or executing external commands in constructors.",
 			Severity:    cop.Error,
 		},
-		Types: true,
+		Types:     true,
+		Candidate: constructorCommandCandidate,
 		Run: func(p *cop.Pass) {
 			p.ForEachFunc(func(fn *ast.FuncDecl) {
 				if !isConstructor(fn) || fn.Body == nil {
@@ -56,5 +59,49 @@ func constructorCommandCall(info *types.Info, call *ast.CallExpr) (string, bool)
 		return "os/exec.Cmd." + fn.Name(), true
 	default:
 		return "", false
+	}
+}
+
+// Keep this broader than the shared matcher; false positives only cost type checking.
+func constructorCommandCandidate(file *ast.File) bool {
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil || fn.Body == nil || !strings.HasPrefix(fn.Name.Name, "New") {
+			continue
+		}
+		found := false
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			if found {
+				return false
+			}
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			switch calledName(call.Fun) {
+			case "Command", "CommandContext", "Run", "Start", "Output", "CombinedOutput":
+				found = true
+			}
+			return !found
+		})
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
+func calledName(expr ast.Expr) string {
+	switch expr := ast.Unparen(expr).(type) {
+	case *ast.Ident:
+		return expr.Name
+	case *ast.SelectorExpr:
+		return expr.Sel.Name
+	case *ast.IndexExpr:
+		return calledName(expr.X)
+	case *ast.IndexListExpr:
+		return calledName(expr.X)
+	default:
+		return ""
 	}
 }

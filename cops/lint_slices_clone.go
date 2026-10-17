@@ -12,10 +12,11 @@ import (
 // NewLintSlicesClone suggests shallow copies, including in typed tests.
 // Rewrites must preserve nilness, destination types, and capacity contracts.
 func NewLintSlicesClone(opts ...cop.FuncOption) *prog.Func {
-	return modernizationProgram(newSlicesCloneFile(opts...))
+	return modernizationProgram(NewLintSlicesCloneFile(opts...))
 }
 
-func newSlicesCloneFile(opts ...cop.FuncOption) *cop.Func {
+// NewLintSlicesCloneFile is the file-based form for custom execution adapters.
+func NewLintSlicesCloneFile(opts ...cop.FuncOption) *cop.Func {
 	return configuredFileCop(&cop.Func{
 		Meta: cop.Meta{
 			Name:        "Lint/SlicesClone",

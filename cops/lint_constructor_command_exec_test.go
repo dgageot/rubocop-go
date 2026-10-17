@@ -65,7 +65,7 @@ func TestConstructorCommandExec(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			offenses := runExtractedTypedCop(t, newConstructorCommandExecFile(), "package p\n"+tc.src)
+			offenses := runExtractedTypedCop(t, NewLintConstructorCommandExecFile(), "package p\n"+tc.src)
 			require.Len(t, offenses, tc.want)
 			for _, offense := range offenses {
 				assert.Equal(t, "Lint/ConstructorCommandExec", offense.CopName)
@@ -78,10 +78,10 @@ func TestConstructorCommandExec(t *testing.T) {
 
 func TestConstructorCommandExecWithoutTypes(t *testing.T) {
 	t.Parallel()
-	assert.Len(t, coptest.Run(t, newConstructorCommandExecFile(), `package p
+	assert.Len(t, coptest.Run(t, NewLintConstructorCommandExecFile(), `package p
 func NewCmd() any { return exec.Command("echo") }`), 1)
-	assert.Empty(t, coptest.Run(t, newConstructorCommandExecFile(), `package p
+	assert.Empty(t, coptest.Run(t, NewLintConstructorCommandExecFile(), `package p
 func NewService(s Service) error { return s.Run() }`))
-	assert.Empty(t, coptest.Run(t, newConstructorCommandExecFile(), `package p
+	assert.Empty(t, coptest.Run(t, NewLintConstructorCommandExecFile(), `package p
 func NewCmd() *Cmd`))
 }

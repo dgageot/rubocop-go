@@ -42,6 +42,7 @@ func NewLintSlogContextual(opts ...cop.FuncOption) *cop.Func {
 			Description: "Use contextual slog calls when a context is available.",
 			Severity:    cop.Warning,
 		},
+		Candidate: slogCandidate,
 		Run: func(p *cop.Pass) {
 			walk := func(typ *ast.FuncType, body *ast.BlockStmt) {
 				cop.WalkFuncWithContextScope(typ, body, false, func(n ast.Node, hasContext bool) bool {
@@ -78,4 +79,18 @@ func NewLintSlogContextual(opts ...cop.FuncOption) *cop.Func {
 			})
 		},
 	}, opts...)
+}
+
+func slogCandidate(file *ast.File) bool {
+	found := false
+	ast.Inspect(file, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		if call, ok := n.(*ast.CallExpr); ok {
+			_, found = cop.CallTo(call, "slog", "Debug", "Info", "Warn", "Error")
+		}
+		return !found
+	})
+	return found
 }

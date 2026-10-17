@@ -88,7 +88,7 @@ func TestModernizationMinimumVersions(t *testing.T) {
 		{"prefix", "go1.20", "p.go", cutPrefixFixture, newCutPrefixFile},
 		{"suffix", "go1.20", "p.go", cutSuffixFixture, newCutSuffixFile},
 		{"lookup", "go1.24", "p.go", fieldsSeqLookupFixture, newFieldsSeqLookupFile},
-		{"clone", "go1.21", "p.go", slicesCloneFixture, newSlicesCloneFile},
+		{"clone", "go1.21", "p.go", slicesCloneFixture, NewLintSlicesCloneFile},
 		{"concat", "go1.22", "p.go", "package p\nfunc f(a, b []int) []int { return append(append([]int(nil), a...), b...) }", newSlicesConcatFile},
 		{"sort", "go1.21", "p.go", sortStableFuncFixture, newSortStableFuncFile},
 	} {

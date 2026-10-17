@@ -120,7 +120,14 @@ func (p *Pass) Reportf(n ast.Node, format string, args ...any) {
 // Use it when you want a span narrower or wider than an ast.Node naturally
 // covers.
 func (p *Pass) ReportAt(pos, end token.Pos, message string) {
-	o := NewOffenseAt(p.Cop, p.FileSet, pos, end, message)
+	p.ReportOffense(NewOffenseAt(p.Cop, p.FileSet, pos, end, message))
+}
+
+// ReportOffense forwards a diagnostic without reconstructing its source positions.
+// The receiving cop's name, severity and override are applied.
+func (p *Pass) ReportOffense(o Offense) {
+	o.CopName = p.Cop.Name()
+	o.Severity = p.Cop.Severity()
 	if p.SeverityOverride != nil {
 		o.Severity = *p.SeverityOverride
 	}
@@ -263,6 +270,9 @@ type Func struct {
 	// Returning false from Scope short-circuits the cop entirely; Run
 	// is not called and no offense can be produced.
 	Scope CheckScope
+	// Candidate is a pure syntax-only prefilter. False must mean Check cannot
+	// report an offense. Nil accepts every file; it does not change file coverage.
+	Candidate func(*ast.File) bool
 	// MinGoVersion is the minimum file language version for syntax, such as
 	// "go1.26". Check skips files with older or unknown [Pass.GoVersion] values.
 	MinGoVersion string
@@ -286,6 +296,11 @@ type FuncOption func(*Func)
 // WithScope restricts a Func to files matching scope.
 func WithScope(scope CheckScope) FuncOption {
 	return func(f *Func) { f.Scope = scope }
+}
+
+// WithCandidate sets a conservative syntax-only prefilter, independent of Scope.
+func WithCandidate(candidate func(*ast.File) bool) FuncOption {
+	return func(f *Func) { f.Candidate = candidate }
 }
 
 // WithMinGoVersion requires a file language version of at least minimum
@@ -327,6 +342,9 @@ func (f *Func) Severity() Severity { return f.Meta.Severity }
 
 // Check implements [Cop].
 func (f *Func) Check(p *Pass) {
+	if f.Candidate != nil && !f.Candidate(p.File) {
+		return
+	}
 	if f.MinGoVersion != "" && (!version.IsValid(f.MinGoVersion) || version.Compare(p.GoVersion(), f.MinGoVersion) < 0) {
 		return
 	}

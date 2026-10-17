@@ -119,6 +119,41 @@ func main() {
 
 See `examples/embed` for a runnable version of this pattern.
 
+### Selecting execution modes
+
+Keep file and whole-program cops in explicitly typed lists. Program cops share
+one loaded program, and test-aware adapters share its lazy test-package cache:
+
+```go
+files := []cop.Cop{
+    cops.NewLintSlogContextual(),
+    runner.WithDirectoryTypes(cops.NewLintConstructorCommandExecFile()),
+}
+programs := []prog.Cop{
+    prog.FromFileWithTests(cops.NewLintSlicesCloneFile()),
+    cops.NewLintContextConnectivity(),
+}
+r := runner.New(files, config.DefaultConfig(), os.Stdout).WithProgramCops(programs)
+```
+
+`prog.FromFile` uses the production program's resolved files.
+`prog.FromFileWithTests` includes internal/external tests and partially typed
+packages, visiting the first in-scope variant of each physical filename. It is
+not a replacement for modernization cops that require agreement across all
+healthy variants.
+
+`runner.WithDirectoryTypes` is a best-effort adapter for checks that must also
+see inactive files. It checks all same-package Go siblings, including tests and
+conflicting platform files, using the standard importer. It supplies partial
+`Types`, `Defs`, and `Uses` information, not module-aware imports or a module Go
+version. Use the normal runner or program adapters for checks requiring those.
+
+File cops can define a pure `Candidate func(*ast.File) bool` prefilter, or use
+`cop.WithCandidate`. Returning false must guarantee the full check cannot report
+an offense. It runs before the check and directory preparation, independently
+of policy `Scope`. It does not skip the normal runner's package loading.
+The shared constructor-command and slog cops provide their own prefilters.
+
 ### Restricting a cop to a subset of files
 
 Most cops only apply to a specific area of the tree. Declare the scope
