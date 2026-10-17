@@ -154,6 +154,30 @@ an offense. It runs before the check and directory preparation, independently
 of policy `Scope`. It does not skip the normal runner's package loading.
 The shared constructor-command and slog cops provide their own prefilters.
 
+### Sharing production and test analysis
+
+For read-only program cops that inspect both production and tests, opt into a
+single type-checked snapshot:
+
+```go
+r := runner.New(files, config.DefaultConfig(), os.Stdout).
+    WithProgramCops(programs).
+    WithSharedProgramLoad()
+```
+
+Sharing is best-effort: discovery or combined-load failures retain the default
+production load and lazy test loading. Otherwise the loader discovers production
+roots, then type-checks their directories with
+tests once. Production SSA excludes test variants; `PackagesWithTests` reuses
+the loaded test view. File cops still run first with their existing all-files
+and import-resolution behavior, including inactive files. This does not cache
+results across runs or run cops concurrently.
+
+Unlike the default lazy test load, test sources and errors are observed when
+program analysis starts. Do not enable this for cops that modify source files,
+package data, or the build environment between program checks. Use
+`prog.LoadDirWithTests` for the same snapshot behavior without a runner.
+
 ### Restricting a cop to a subset of files
 
 Most cops only apply to a specific area of the tree. Declare the scope
