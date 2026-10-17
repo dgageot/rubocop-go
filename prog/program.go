@@ -106,10 +106,65 @@ func LoadDir(dir string, patterns ...string) (*Program, error) {
 		return nil, fmt.Errorf("no packages matched %v", patterns)
 	}
 
+	return buildProgram(cfg.Fset, pkgs, patterns)
+}
+
+// LoadDirWithTests loads production packages and test variants in one snapshot.
+// Test variants are cached immediately; only production packages receive SSA.
+// If discovery or the combined load fails, it falls back to LoadDir with lazy tests.
+func LoadDirWithTests(dir string, patterns ...string) (*Program, error) {
+	if len(patterns) == 0 {
+		patterns = []string{"."}
+	}
+	// Resolve the production roots first: generated test mains have no public marker.
+	roots, err := packages.Load(&packages.Config{Mode: packages.NeedName | packages.NeedFiles, Dir: dir}, patterns...)
+	if err != nil {
+		return LoadDir(dir, patterns...)
+	}
+	if len(roots) == 0 {
+		return nil, fmt.Errorf("no packages matched %v", patterns)
+	}
+	var dirs []string
+	seen := make(map[string]bool)
+	for _, pkg := range roots {
+		if pkg.Dir != "" && !seen[pkg.Dir] {
+			dirs = append(dirs, pkg.Dir)
+			seen[pkg.Dir] = true
+		}
+	}
+	if len(dirs) == 0 {
+		return LoadDir(dir, patterns...)
+	}
+	cfg := &packages.Config{Mode: loadMode, Dir: dirs[0], Fset: token.NewFileSet(), Tests: true}
+	all, err := packages.Load(cfg, dirs...)
+	if err != nil {
+		return LoadDir(dir, patterns...)
+	}
+	byID := make(map[string]*packages.Package)
+	for _, pkg := range all {
+		byID[pkg.ID] = pkg
+	}
+	var production []*packages.Package
+	for _, root := range roots {
+		pkg := byID[root.ID]
+		if pkg == nil {
+			return LoadDir(dir, patterns...)
+		}
+		production = append(production, pkg)
+	}
+	program, err := buildProgram(cfg.Fset, production, patterns)
+	if err != nil {
+		return nil, err
+	}
+	program.packagesWithTestsOnce.Do(func() { program.packagesWithTests = all })
+	return program, nil
+}
+
+func buildProgram(fset *token.FileSet, pkgs []*packages.Package, patterns []string) (*Program, error) {
 	// Lower only the initial packages to SSA. Whole-program cops operate on
 	// project code; dependencies remain available for type information but
 	// don't need SSA bodies or call-graph nodes.
-	ssaProg := ssa.NewProgram(cfg.Fset, ssa.InstantiateGenerics)
+	ssaProg := ssa.NewProgram(fset, ssa.InstantiateGenerics)
 	created := map[*types.Package]bool{}
 	packages.Visit(pkgs, func(pkg *packages.Package) bool {
 		if pkg.Types == nil || created[pkg.Types] {
@@ -135,7 +190,7 @@ func LoadDir(dir string, patterns ...string) (*Program, error) {
 
 	ssaFns := sourceFunctions(ssaPkgs)
 	return &Program{
-		Fset:         cfg.Fset,
+		Fset:         fset,
 		Packages:     pkgs,
 		SSA:          ssaProg,
 		SSAPackages:  ssaPkgs,

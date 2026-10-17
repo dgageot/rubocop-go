@@ -38,7 +38,8 @@ type Runner struct {
 	ProgramCops []prog.Cop
 
 	// needsTypes is true when at least one cop requests type information.
-	needsTypes bool
+	needsTypes        bool
+	sharedProgramLoad bool
 }
 
 // New creates a Runner with the given cops filtered by config. The default
@@ -78,6 +79,10 @@ func (r *Runner) WithProgramCops(cops []prog.Cop) *Runner {
 	}
 	return r
 }
+
+// WithSharedProgramLoad opts into one production/test snapshot for program cops.
+// File cops retain their existing directory-based type checking.
+func (r *Runner) WithSharedProgramLoad() *Runner { r.sharedProgramLoad = true; return r }
 
 // Run inspects all Go files in the given paths and returns the total offense count.
 func (r *Runner) Run(paths []string) (int, error) {
@@ -200,7 +205,13 @@ func (r *Runner) parseFiles(fset *token.FileSet, paths []string) ([]*ast.File, [
 // no offenses — whole-program analysis is best-effort, never fatal.
 func (r *Runner) runProgramCops(paths []string) []cop.Offense {
 	patterns := loadPatterns(paths)
-	program, err := prog.Load(patterns...)
+	var program *prog.Program
+	var err error
+	if r.sharedProgramLoad {
+		program, err = prog.LoadDirWithTests("", patterns...)
+	} else {
+		program, err = prog.Load(patterns...)
+	}
 	if err != nil {
 		writef(os.Stderr, "whole-program analysis skipped: %v\n", err)
 		return nil
