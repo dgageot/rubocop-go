@@ -31,7 +31,7 @@ func TestModernizationLanguageAndAPIVersions(t *testing.T) {
 		{"lookup needs range syntax", "go1.22", fieldsSeqLookupFixture, newFieldsSeqLookupFile(), 0},
 		{"prefix uses module APIs", "go1.21", cutPrefixFixture, newCutPrefixFile(), 1},
 		{"suffix uses module APIs", "go1.21", cutSuffixFixture, newCutSuffixFile(), 1},
-		{"clone uses module APIs", "go1.21", slicesCloneFixture, newSlicesCloneFile(), 1},
+		{"clone uses module APIs", "go1.21", slicesCloneFixture, NewLintSlicesCloneFile(), 1},
 		{"sort uses module APIs", "go1.21", sortStableFuncFixture, newSortStableFuncFile(), 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

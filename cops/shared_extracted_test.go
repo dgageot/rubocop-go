@@ -44,11 +44,11 @@ func TestExtractedCopFactories(t *testing.T) {
 		new  func(...cop.FuncOption) *prog.Func
 		src  string
 	}{
-		{"command", newConstructorCommandExecFile, NewLintConstructorCommandExec, constructorCommandExecFixture},
+		{"command", NewLintConstructorCommandExecFile, NewLintConstructorCommandExec, constructorCommandExecFixture},
 		{"prefix", newCutPrefixFile, NewLintCutPrefix, cutPrefixFixture},
 		{"suffix", newCutSuffixFile, NewLintCutSuffix, cutSuffixFixture},
 		{"lookup", newFieldsSeqLookupFile, NewLintFieldsSeqLookup, fieldsSeqLookupFixture},
-		{"clone", newSlicesCloneFile, NewLintSlicesClone, slicesCloneFixture},
+		{"clone", NewLintSlicesCloneFile, NewLintSlicesClone, slicesCloneFixture},
 		{"sort", newSortStableFuncFile, NewLintSortStableFunc, sortStableFuncFixture},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -87,7 +87,7 @@ func TestExtractedPolicyFactories(t *testing.T) {
 		new  func(...cop.FuncOption) *cop.Func
 		src  string
 	}{
-		{"command", newConstructorCommandExecFile, `package p; func New() any { return exec.Command("echo") }`},
+		{"command", NewLintConstructorCommandExecFile, `package p; func New() any { return exec.Command("echo") }`},
 		{"stdout", NewLintNoStdoutInLibraries, `package p; func f() { fmt.Println("hello") }`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

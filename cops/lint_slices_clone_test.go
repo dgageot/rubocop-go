@@ -56,7 +56,7 @@ func TestSlicesClone(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			offenses := runExtractedTypedCop(t, newSlicesCloneFile(), "package p\n"+tc.src)
+			offenses := runExtractedTypedCop(t, NewLintSlicesCloneFile(), "package p\n"+tc.src)
 			require.Len(t, offenses, tc.want)
 			for _, offense := range offenses {
 				assert.Equal(t, "Lint/SlicesClone", offense.CopName)
