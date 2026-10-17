@@ -120,7 +120,14 @@ func (p *Pass) Reportf(n ast.Node, format string, args ...any) {
 // Use it when you want a span narrower or wider than an ast.Node naturally
 // covers.
 func (p *Pass) ReportAt(pos, end token.Pos, message string) {
-	o := NewOffenseAt(p.Cop, p.FileSet, pos, end, message)
+	p.ReportOffense(NewOffenseAt(p.Cop, p.FileSet, pos, end, message))
+}
+
+// ReportOffense forwards a diagnostic without reconstructing its source positions.
+// The receiving cop's name, severity and override are applied.
+func (p *Pass) ReportOffense(o Offense) {
+	o.CopName = p.Cop.Name()
+	o.Severity = p.Cop.Severity()
 	if p.SeverityOverride != nil {
 		o.Severity = *p.SeverityOverride
 	}
