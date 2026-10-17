@@ -48,7 +48,7 @@ func TestConstructorCommandCandidate(t *testing.T) {
 func TestConstructorCommandCandidateKeepsSharedFindings(t *testing.T) {
 	t.Parallel()
 	files := coptest.ProgramFiles{
-		"go.mod": "module example.test\n\ngo 1.27\n",
+		"go.mod": "module example.test\n\ngo 1.26\n",
 		"commands.go": `package p
 import ex "os/exec"
 type Cmd = ex.Cmd
