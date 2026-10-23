@@ -89,7 +89,7 @@ func (i *resolvedImporter) Import(path string) (*types.Package, error) {
 }
 
 // importResolver shares one import graph per module during a run. Loose files
-// and custom build configurations retain directory-local resolution.
+// and directory-dependent build configurations retain local resolution.
 type importResolver struct {
 	files    map[string][]string
 	contexts map[string]string
@@ -138,7 +138,30 @@ func canShareImports() bool {
 		return false
 	}
 	var env struct{ GO111MODULE, GOFLAGS string }
-	return json.Unmarshal(output, &env) == nil && env.GO111MODULE != "off" && env.GOFLAGS == ""
+	return json.Unmarshal(output, &env) == nil && env.GO111MODULE != "off" && shareableGoFlags(env.GOFLAGS)
+}
+
+func shareableGoFlags(flags string) bool {
+	// Only unquoted, directory-independent flags can share an import graph.
+	if strings.ContainsAny(flags, "\"'") {
+		return false
+	}
+	for flag := range strings.FieldsSeq(flags) {
+		name, value, ok := strings.Cut(flag, "=")
+		if !ok {
+			return false
+		}
+		switch name {
+		case "-mod", "--mod":
+			if value != "vendor" && value != "readonly" {
+				return false
+			}
+		case "-tags", "--tags":
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func importContext(dir string) string {
