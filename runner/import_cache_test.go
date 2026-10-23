@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,6 +12,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/tools/go/packages"
+
+	"github.com/dgageot/rubocop-go/config"
+	"github.com/dgageot/rubocop-go/cop"
+	"github.com/dgageot/rubocop-go/cops"
 )
 
 func TestImportResolverSharesModuleGraph(t *testing.T) {
@@ -32,8 +37,34 @@ func TestImportResolverSharesModuleGraph(t *testing.T) {
 	assert.Contains(t, http.Imports(), url)
 }
 
+func TestImportResolverSeparatesVendoredModules(t *testing.T) {
+	isolateImportEnvironment(t)
+	t.Setenv("GOFLAGS", "-mod=vendor -tags=integration,filestore")
+	dir := t.TempDir()
+	files := importFixture(t, dir, map[string]string{
+		"go.mod":                       "module outer.test\ngo 1.26\nrequire dep.test v1.0.0\n",
+		"a.go":                         "package outer\nimport \"dep.test\"\nvar _ dep.First\n",
+		"vendor/modules.txt":           "# dep.test v1.0.0\n## explicit; go 1.26\ndep.test\n",
+		"vendor/dep.test/dep.go":       "package dep\ntype First int\n",
+		"inner/go.mod":                 "module inner.test\ngo 1.26\nrequire dep.test v2.0.0+incompatible\n",
+		"inner/a.go":                   "package inner\nimport \"dep.test\"\nvar _ dep.Second\n",
+		"inner/vendor/modules.txt":     "# dep.test v2.0.0+incompatible\n## explicit; go 1.26\ndep.test\n",
+		"inner/vendor/dep.test/dep.go": "package dep\ntype Second int\n",
+	})
+	resolver := newImportResolver(files)
+	outer, err := resolver.resolve(dir, nil).Import("dep.test")
+	require.NoError(t, err)
+	inner, err := resolver.resolve(filepath.Join(dir, "inner"), nil).Import("dep.test")
+	require.NoError(t, err)
+	require.NotNil(t, outer.Scope().Lookup("First"))
+	require.Nil(t, outer.Scope().Lookup("Second"))
+	require.NotNil(t, inner.Scope().Lookup("Second"))
+	require.Nil(t, inner.Scope().Lookup("First"))
+}
+
 func TestImportResolverSeparatesNestedModules(t *testing.T) {
 	isolateImportEnvironment(t)
+	t.Setenv("GOFLAGS", "-mod=readonly -tags=integration,filestore")
 	dir := t.TempDir()
 	files := importFixture(t, dir, map[string]string{
 		"go.mod":        "module outer.test\ngo 1.26\nrequire dep.test v0.0.0\nreplace dep.test => ./first\n",
@@ -94,7 +125,7 @@ func TestImportResolverCustomEnvironment(t *testing.T) {
 		t.Run(variable, func(t *testing.T) {
 			value := "off"
 			if variable == "GOFLAGS" {
-				value = "-tags=custom"
+				value = "-modfile=custom.mod"
 			}
 			if variable == "GOPACKAGESDRIVER" {
 				value = "custom-driver"
@@ -107,10 +138,119 @@ func TestImportResolverCustomEnvironment(t *testing.T) {
 
 func TestImportResolverPersistedEnvironment(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "goenv")
-	require.NoError(t, os.WriteFile(path, []byte("GOFLAGS=-tags=custom\n"), 0o600))
+	require.NoError(t, os.WriteFile(path, []byte("GOFLAGS=-modfile=custom.mod\n"), 0o600))
 	t.Setenv("GOENV", path)
 	t.Setenv("GOFLAGS", "")
 	assert.False(t, canShareImports())
+}
+
+func TestShareableGoFlags(t *testing.T) {
+	for _, tc := range []struct {
+		flags string
+		want  bool
+	}{
+		{"", true},
+		{"-mod=vendor -tags=integration,filestore", true},
+		{"-mod=readonly", true},
+		{"-mod=mod", false},
+		{"--mod=vendor --tags=integration,filestore", true},
+		{"-tags=", true},
+		{"-mod=vendor\t-tags=integration,filestore\n", true},
+		{"-mod=unknown", false},
+		{"-mod", false},
+		{"-tags integration,filestore", false},
+		{"'-tags=integration filestore'", false},
+		{"-tags=\"integration filestore\"", false},
+		{"-modfile=relative.mod", false},
+		{"-overlay=relative.json", false},
+		{"-tags=integration -overlay=relative.json", false},
+		{"-mod=vendor -C=other", false},
+		{"-gcflags=all=-Irelative", false},
+		{"-toolexec=./wrapper", false},
+	} {
+		t.Run(tc.flags, func(t *testing.T) {
+			require.Equal(t, tc.want, shareableGoFlags(tc.flags))
+		})
+	}
+}
+
+func TestImportResolverSharesVendorAndTags(t *testing.T) {
+	isolateImportEnvironment(t)
+	t.Setenv("GOFLAGS", "-mod=vendor -tags=integration,filestore")
+	dir := t.TempDir()
+	files := importFixture(t, dir, map[string]string{
+		"go.mod":                      "module example.test\ngo 1.26\nrequire dep.test v1.0.0\n",
+		"a/a.go":                      "package a\nimport \"dep.test\"\nvar _ dep.Enabled\n",
+		"b/b.go":                      "package b\nimport \"net/url\"\nvar _ url.URL\n",
+		"vendor/modules.txt":          "# dep.test v1.0.0\n## explicit; go 1.26\ndep.test\n",
+		"vendor/dep.test/enabled.go":  "//go:build integration && filestore\n\npackage dep\nimport \"net/url\"\ntype URL = url.URL\ntype Enabled int\n",
+		"vendor/dep.test/disabled.go": "//go:build !integration || !filestore\n\npackage dep\ntype Disabled int\n",
+	})
+	resolver := newImportResolver(files)
+	a := resolver.resolve(filepath.Join(dir, "a"), nil)
+	b := resolver.resolve(filepath.Join(dir, "b"), nil)
+	require.Same(t, a, b)
+	dep, err := a.Import("dep.test")
+	require.NoError(t, err)
+	require.NotNil(t, dep.Scope().Lookup("Enabled"))
+	require.Nil(t, dep.Scope().Lookup("Disabled"))
+	url, err := b.Import("net/url")
+	require.NoError(t, err)
+	require.Contains(t, dep.Imports(), url)
+	require.False(t, resolver.failed[resolver.contexts[filepath.Join(dir, "a")]])
+}
+
+func TestImportResolverFlaggedDiagnosticsMatchLocal(t *testing.T) {
+	isolateImportEnvironment(t)
+	t.Setenv("GOFLAGS", "-mod=vendor -tags=integration,filestore")
+	dir := t.TempDir()
+	files := importFixture(t, dir, map[string]string{
+		"go.mod": "module example.test\ngo 1.26\nrequire dep.test v1.0.0\n",
+		"a/a.go": `package a
+import ("fmt"; "dep.test")
+func New(r *dep.Resolver) error { _, err := r.LookupHost(nil, "example.test"); return err }
+func wrap(err error) error { return fmt.Errorf("%v", err) }
+func suppressed(err error) error { return fmt.Errorf("%v", err) } //rubocop:disable Lint/WrapErrors
+`,
+		"b/b.go": `package b
+import ("fmt"; "dep.test")
+func lookup(r *dep.Resolver) { _, _ = r.LookupHost(nil, "example.test") }
+func wrap(err error) error { return fmt.Errorf("%w", err) }
+`,
+		"vendor/modules.txt":     "# dep.test v1.0.0\n## explicit; go 1.26\ndep.test\n",
+		"vendor/dep.test/dep.go": "//go:build integration && filestore\n\npackage dep\nimport \"net\"\ntype Resolver = net.Resolver\n",
+	})
+	check := func(shared bool, order []string) []cop.Offense {
+		resolver := newImportResolver(files)
+		if !shared {
+			resolver.contexts = nil
+		}
+		r := New([]cop.Cop{cops.NewLintWrapErrors(), cops.NewLintConstructorNetworkIO()}, config.DefaultConfig(), io.Discard)
+		var offenses []cop.Offense
+		for _, name := range order {
+			path := filepath.Join(dir, name, name+".go")
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+			require.NoError(t, err)
+			parsed := []*ast.File{file}
+			info, pkg := typeCheckWithImporter(fset, filepath.Dir(path), parsed, resolver.resolve(filepath.Dir(path), parsed))
+			offenses = append(offenses, r.runCops(fset, file, info, pkg)...)
+		}
+		return offenses
+	}
+	local := check(false, []string{"a", "b"})
+	require.Len(t, local, 2)
+	for _, order := range [][]string{{"a", "b"}, {"b", "a"}} {
+		require.ElementsMatch(t, local, check(true, order))
+	}
+}
+
+func TestImportResolverSharesPersistedFlags(t *testing.T) {
+	isolateImportEnvironment(t)
+	path := filepath.Join(t.TempDir(), "goenv")
+	require.NoError(t, os.WriteFile(path, []byte("GOFLAGS=-mod=readonly -tags=integration,filestore\n"), 0o600))
+	t.Setenv("GOENV", path)
+	require.True(t, canShareImports())
 }
 
 func BenchmarkImportResolver(b *testing.B) {
@@ -170,6 +310,7 @@ func isolateImportEnvironment(tb testing.TB) {
 
 func TestImportResolverBatchFailureRetainsLocalImports(t *testing.T) {
 	isolateImportEnvironment(t)
+	t.Setenv("GOFLAGS", "-mod=readonly -tags=integration,filestore")
 	dir := t.TempDir()
 	files := importFixture(t, dir, map[string]string{
 		"go.mod":           "module example.test\ngo 1.26\n",
