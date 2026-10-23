@@ -63,7 +63,7 @@ func checkChannelLoops(p *cop.Pass, cancellation bool) {
 		if len(candidates) == 0 {
 			return true
 		}
-		graph := cfg.New(body, func(call *ast.CallExpr) bool { return p.CalleeObject(call) != types.Universe.Lookup("panic") })
+		graph := cfg.New(body, func(call *ast.CallExpr) bool { return !channelLoopExits(p, call) })
 		flow := newChannelLoopFlow(graph, body)
 		for _, candidate := range candidates {
 			if !channelLoopRepeats(p, flow, candidate) {
@@ -77,6 +77,63 @@ func checkChannelLoops(p *cop.Pass, cancellation bool) {
 		}
 		return true
 	})
+}
+
+func channelLoopExits(p *cop.Pass, call *ast.CallExpr) bool {
+	obj := p.CalleeObject(call)
+	if obj == types.Universe.Lookup("panic") {
+		return true
+	}
+	fn, ok := obj.(*types.Func)
+	if !ok || fn.Pkg() == nil {
+		return false
+	}
+	recv := fn.Signature().Recv()
+	switch fn.Pkg().Path() {
+	case "runtime":
+		return recv == nil && fn.Name() == "Goexit"
+	case "testing":
+		if recv == nil {
+			return false
+		}
+		if _, ok := recv.Type().Underlying().(*types.Interface); ok {
+			return false
+		}
+		switch fn.Name() {
+		case "Fatal", "Fatalf", "FailNow", "Skip", "Skipf", "SkipNow":
+			return true
+		}
+	case "github.com/stretchr/testify/require", "github.com/stretchr/testify/assert":
+		if recv != nil || len(call.Args) == 0 || !channelLoopTestingPointer(p.Info.TypeOf(call.Args[0])) {
+			return false
+		}
+		switch fn.Name() {
+		case "FailNow", "FailNowf":
+			return true
+		case "Fail", "Failf":
+			return fn.Pkg().Path() == "github.com/stretchr/testify/require"
+		}
+	}
+	return false
+}
+
+func channelLoopTestingPointer(typ types.Type) bool {
+	if typ == nil {
+		return false
+	}
+	ptr, ok := types.Unalias(typ).(*types.Pointer)
+	if !ok {
+		return false
+	}
+	named, ok := types.Unalias(ptr.Elem()).(*types.Named)
+	if !ok || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != "testing" {
+		return false
+	}
+	switch named.Obj().Name() {
+	case "T", "B", "F":
+		return true
+	}
+	return false
 }
 
 // Restrict warnings to unconditional loops; conditional loops may exit through state updates.

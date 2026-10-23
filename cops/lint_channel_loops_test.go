@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -119,6 +120,135 @@ func f(ch,other chan int, yes bool, replacements chan chan int, flags chan bool)
 	}
 	for i, tc := range tests {
 		assert.Equal(t, tc.want, counts["case"+strconv.Itoa(i)], tc.name)
+	}
+}
+
+func TestChannelLoopTestExits(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, statement string
+		want            int
+	}{
+		{"fatal", `t.Fatal("stop")`, 0},
+		{"fatalf", `t.Fatalf("stop %d", 1)`, 0},
+		{"fail now", `t.FailNow()`, 0},
+		{"skip", `t.Skip("stop")`, 0},
+		{"skipf", `t.Skipf("stop %d", 1)`, 0},
+		{"skip now", `t.SkipNow()`, 0},
+		{"benchmark", `b.Fatal("stop")`, 0},
+		{"fuzz", `fuzz.Fatal("stop")`, 0},
+		{"aliased testing type", `alias.FailNow()`, 0},
+		{"promoted testing method", `wrapped.Fatal("stop")`, 0},
+		{"parenthesized method", `((t.Fatal))("stop")`, 0},
+		{"method expression", `(*testing.T).Fatal(t, "stop")`, 0},
+		{"goexit", `rt.Goexit()`, 0},
+		{"parenthesized goexit", `((rt.Goexit))()`, 0},
+		{"require fail now", `req.FailNow(t, "stop")`, 0},
+		{"require fail nowf", `req.FailNowf(t, "stop", "%d", 1)`, 0},
+		{"require fail", `req.Fail(t, "stop")`, 0},
+		{"require failf", `req.Failf(t, "stop", "%d", 1)`, 0},
+		{"assert fail now", `check.FailNow(t, "stop")`, 0},
+		{"assert fail nowf", `check.FailNowf(t, "stop", "%d", 1)`, 0},
+		{"require benchmark", `req.FailNow(b, "stop")`, 0},
+		{"require fuzz", `req.FailNow(fuzz, "stop")`, 0},
+		{"require aliased testing type", `req.FailNow(alias, "stop")`, 0},
+		{"parenthesized require", `((req.FailNow))(t, "stop")`, 0},
+		{"conditional fatal", `if yes { t.Fatal("stop") }`, 1},
+		{"both branches exit", `if yes { t.Fatal("stop") } else { t.SkipNow() }`, 0},
+		{"goroutine fatal", `go t.Fatal("stop")`, 1},
+		{"deferred fatal", `defer t.Fatal("stop")`, 1},
+		{"goroutine goexit", `go rt.Goexit()`, 1},
+		{"deferred goexit", `defer rt.Goexit()`, 1},
+		{"goroutine require", `go req.FailNow(t, "stop")`, 1},
+		{"deferred require", `defer req.FailNow(t, "stop")`, 1},
+		{"test error", `t.Error("stop")`, 1},
+		{"test fail", `t.Fail()`, 1},
+		{"conditional require", `req.NoError(t, ctx.Err())`, 1},
+		{"require true", `req.True(t, yes)`, 1},
+		{"assert fail", `check.Fail(t, "stop")`, 1},
+		{"assert failf", `check.Failf(t, "stop", "%d", 1)`, 1},
+		{"fake fatal", `fake.Fatal("stop")`, 1},
+		{"fake fail now", `fake.FailNow()`, 1},
+		{"fake goexit", `fake.Goexit()`, 1},
+		{"testing interface", `tb.FailNow()`, 1},
+		{"overridden embedded interface", `override.FailNow()`, 1},
+		{"fake require target", `req.FailNow(fake, "stop")`, 1},
+		{"fake require fail target", `req.Fail(fake, "stop")`, 1},
+		{"fake assert target", `check.FailNow(fake, "stop")`, 1},
+		{"interface require target", `req.FailNow(tb, "stop")`, 1},
+		{"require testing interface", `req.FailNow(required, "stop")`, 1},
+		{"stored require assertions", `assertions.FailNow("stop")`, 1},
+		{"function variable", `stop := t.FailNow; stop()`, 1},
+		{"shadowed require", `req := fake; req.FailNow()`, 1},
+		{"shadowed runtime", `rt := fake; rt.Goexit()`, 1},
+	}
+	mod, err := os.ReadFile("../go.mod")
+	require.NoError(t, err)
+	sum, err := os.ReadFile("../go.sum")
+	require.NoError(t, err)
+	dir := t.TempDir()
+	files := coptest.ProgramFiles{
+		"go.mod": strings.Replace(string(mod), "module github.com/dgageot/rubocop-go", "module example.test", 1),
+		"go.sum": string(sum),
+	}
+	for i, tc := range tests {
+		pkg := "p"
+		switch i % 3 {
+		case 0:
+			files[fmt.Sprintf("case%d/sample.go", i)] = "package p"
+		case 1:
+			files[fmt.Sprintf("case%d/sample.go", i)] = "package p"
+			pkg = "p_test"
+		}
+		files[fmt.Sprintf("case%d/sample_test.go", i)] = `package ` + pkg + `
+import (
+	"context"
+	rt "runtime"
+	"testing"
+	check "github.com/stretchr/testify/assert"
+	req "github.com/stretchr/testify/require"
+)
+var _, _, _ = rt.Goexit, check.FailNow, req.FailNow
+type testingAlias = testing.T
+type wrapper struct { *testing.T }
+type overrideTB struct { testing.TB }
+func (overrideTB) FailNow() {}
+type fakeT struct{}
+func (fakeT) Fatal(...any) {}
+func (fakeT) FailNow() {}
+func (fakeT) Errorf(string, ...any) {}
+func (fakeT) Goexit() {}
+func cancellation(t *testing.T, b *testing.B, fuzz *testing.F, alias *testingAlias, wrapped wrapper, tb testing.TB, override overrideTB, fake fakeT, required req.TestingT, assertions *req.Assertions, ctx context.Context, ch chan int, yes bool) {
+	for { select { case <-ctx.Done(): ` + tc.statement + `; case <-ch: } }
+}
+func closure(t *testing.T, b *testing.B, fuzz *testing.F, alias *testingAlias, wrapped wrapper, tb testing.TB, override overrideTB, fake fakeT, required req.TestingT, assertions *req.Assertions, ctx context.Context, ch chan int, yes bool) {
+	for { _, ok := <-ch; if !ok { ` + tc.statement + ` } }
+}
+`
+	}
+	for name, content := range files {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	}
+	program, err := prog.LoadDirWithTests(dir, "./...")
+	require.NoError(t, err)
+	pkgs, err := program.PackagesWithTests()
+	require.NoError(t, err)
+	for _, pkg := range pkgs {
+		require.Empty(t, pkg.Errors, pkg.ID)
+		require.False(t, pkg.IllTyped, pkg.ID)
+	}
+	for _, check := range []prog.Cop{NewLintCancellationLoop(), NewLintClosedChannelLoop()} {
+		pass := &prog.Pass{Cop: check, Program: program}
+		check.Check(pass)
+		counts := make(map[string]int)
+		for _, offense := range pass.Offenses() {
+			counts[filepath.Base(filepath.Dir(offense.Pos.Filename))]++
+		}
+		for i, tc := range tests {
+			require.Equal(t, tc.want, counts["case"+strconv.Itoa(i)], "%s: %s", check.Name(), tc.name)
+		}
 	}
 }
 
