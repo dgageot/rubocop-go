@@ -87,3 +87,19 @@ func standardLibraryCall(p *cop.Pass, call *ast.CallExpr, path string, names ...
 	}
 	return "", false
 }
+
+func fileUseCounter(p *cop.Pass) func(types.Object) int {
+	var uses map[types.Object]int
+	return func(obj types.Object) int {
+		if uses == nil {
+			uses = make(map[types.Object]int)
+			ast.Inspect(p.File, func(n ast.Node) bool {
+				if id, ok := n.(*ast.Ident); ok && p.Info.Uses[id] != nil {
+					uses[p.Info.Uses[id]]++
+				}
+				return true
+			})
+		}
+		return uses[obj]
+	}
+}
