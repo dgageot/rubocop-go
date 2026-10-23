@@ -31,13 +31,7 @@ func newFieldsSeqFile(opts ...cop.FuncOption) *cop.Func {
 			if p.Info == nil {
 				return
 			}
-			uses := make(map[types.Object]int)
-			ast.Inspect(p.File, func(n ast.Node) bool {
-				if id, ok := n.(*ast.Ident); ok {
-					uses[p.Info.Uses[id]]++
-				}
-				return true
-			})
+			countUses := fileUseCounter(p)
 			ast.Inspect(p.File, func(n ast.Node) bool {
 				switch node := n.(type) {
 				case *ast.RangeStmt:
@@ -45,11 +39,11 @@ func newFieldsSeqFile(opts ...cop.FuncOption) *cop.Func {
 						reportFieldsSeq(p, call)
 					}
 				case *ast.BlockStmt:
-					checkFieldsSeq(p, node.List, uses)
+					checkFieldsSeq(p, node.List, countUses)
 				case *ast.CaseClause:
-					checkFieldsSeq(p, node.Body, uses)
+					checkFieldsSeq(p, node.Body, countUses)
 				case *ast.CommClause:
-					checkFieldsSeq(p, node.Body, uses)
+					checkFieldsSeq(p, node.Body, countUses)
 				}
 				return true
 			})
@@ -101,7 +95,7 @@ func fieldsValueRange(info *types.Info, loop *ast.RangeStmt) bool {
 	return valid
 }
 
-func checkFieldsSeq(p *cop.Pass, stmts []ast.Stmt, uses map[types.Object]int) {
+func checkFieldsSeq(p *cop.Pass, stmts []ast.Stmt, countUses func(types.Object) int) {
 	for i, stmt := range stmts {
 		obj, init := fieldsLocal(p.Info, stmt)
 		call := fieldsCall(p.Info, init)
@@ -118,7 +112,7 @@ func checkFieldsSeq(p *cop.Pass, stmts []ast.Stmt, uses map[types.Object]int) {
 				rest = rest[1:]
 			}
 		}
-		if uses[obj] != allowedUses {
+		if countUses(obj) != allowedUses {
 			continue
 		}
 		for _, next := range rest {

@@ -31,13 +31,7 @@ func newFieldsSeqLookupFile(opts ...cop.FuncOption) *cop.Func {
 			if p.Info == nil {
 				return
 			}
-			uses := make(map[types.Object]int)
-			ast.Inspect(p.File, func(n ast.Node) bool {
-				if id, ok := n.(*ast.Ident); ok {
-					uses[p.Info.Uses[id]]++
-				}
-				return true
-			})
+			countUses := fileUseCounter(p)
 			ast.Inspect(p.File, func(n ast.Node) bool {
 				switch node := n.(type) {
 				case *ast.CallExpr:
@@ -48,15 +42,15 @@ func newFieldsSeqLookupFile(opts ...cop.FuncOption) *cop.Func {
 					}
 				case *ast.IfStmt:
 					obj, call := lookupFieldsLocal(p.Info, node.Init)
-					if call != nil && uses[obj] == 2 && lookupLengthGuard(p.Info, node, obj, false) && len(node.Body.List) > 0 && lookupFirstRead(p.Info, node.Body.List[0], obj) {
+					if call != nil && countUses(obj) == 2 && lookupLengthGuard(p.Info, node, obj, false) && len(node.Body.List) > 0 && lookupFirstRead(p.Info, node.Body.List[0], obj) {
 						reportFirstField(p, call)
 					}
 				case *ast.BlockStmt:
-					checkFirstFieldLookup(p, node.List, uses)
+					checkFirstFieldLookup(p, node.List, countUses)
 				case *ast.CaseClause:
-					checkFirstFieldLookup(p, node.Body, uses)
+					checkFirstFieldLookup(p, node.Body, countUses)
 				case *ast.CommClause:
-					checkFirstFieldLookup(p, node.Body, uses)
+					checkFirstFieldLookup(p, node.Body, countUses)
 				}
 				return true
 			})
@@ -107,10 +101,10 @@ func lookupFieldsLocal(info *types.Info, stmt ast.Stmt) (types.Object, *ast.Call
 	return info.Defs[name], lookupFieldsCall(info, value)
 }
 
-func checkFirstFieldLookup(p *cop.Pass, stmts []ast.Stmt, uses map[types.Object]int) {
+func checkFirstFieldLookup(p *cop.Pass, stmts []ast.Stmt, countUses func(types.Object) int) {
 	for i := 0; i+2 < len(stmts); i++ {
 		obj, call := lookupFieldsLocal(p.Info, stmts[i])
-		if call == nil || uses[obj] != 2 {
+		if call == nil || countUses(obj) != 2 {
 			continue
 		}
 		guard, ok := stmts[i+1].(*ast.IfStmt)

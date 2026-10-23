@@ -28,21 +28,15 @@ func newJSONMarshalWriteFile(opts ...cop.FuncOption) *cop.Func {
 			if p.Info == nil || ast.IsGenerated(p.File) {
 				return
 			}
-			uses := make(map[types.Object]int)
-			ast.Inspect(p.File, func(n ast.Node) bool {
-				if id, ok := n.(*ast.Ident); ok && p.Info.Uses[id] != nil {
-					uses[p.Info.Uses[id]]++
-				}
-				return true
-			})
+			countUses := fileUseCounter(p)
 			ast.Inspect(p.File, func(n ast.Node) bool {
 				switch node := n.(type) {
 				case *ast.BlockStmt:
-					checkJSONMarshalWrite(p, node.List, uses)
+					checkJSONMarshalWrite(p, node.List, countUses)
 				case *ast.CaseClause:
-					checkJSONMarshalWrite(p, node.Body, uses)
+					checkJSONMarshalWrite(p, node.Body, countUses)
 				case *ast.CommClause:
-					checkJSONMarshalWrite(p, node.Body, uses)
+					checkJSONMarshalWrite(p, node.Body, countUses)
 				}
 				return true
 			})
@@ -50,11 +44,11 @@ func newJSONMarshalWriteFile(opts ...cop.FuncOption) *cop.Func {
 	}, opts...)
 }
 
-func checkJSONMarshalWrite(p *cop.Pass, stmts []ast.Stmt, uses map[types.Object]int) {
+func checkJSONMarshalWrite(p *cop.Pass, stmts []ast.Stmt, countUses func(types.Object) int) {
 	// The buffer, encoder, optional escaping, error guard, and return must be adjacent.
 	for i := max(0, len(stmts)-5); i+3 < len(stmts); i++ {
 		buffer := jsonMarshalWriteBuffer(p.Info, stmts[i])
-		if buffer == nil || uses[buffer] != 2 {
+		if buffer == nil || countUses(buffer) != 2 {
 			continue
 		}
 		encoder, value := fieldsLocal(p.Info, stmts[i+1])
@@ -84,10 +78,10 @@ func checkJSONMarshalWrite(p *cop.Pass, stmts []ast.Stmt, uses map[types.Object]
 			encoderUses++
 			rest = rest[1:]
 		}
-		if len(rest) != 2 || uses[encoder] != encoderUses {
+		if len(rest) != 2 || countUses(encoder) != encoderUses {
 			continue
 		}
-		failure := jsonMarshalWriteGuard(p.Info, rest[0], encoder, uses)
+		failure := jsonMarshalWriteGuard(p.Info, rest[0], encoder, countUses)
 		if failure == nil || !jsonMarshalWriteReturn(p.Info, rest[1], buffer, len(failure.Results)) {
 			continue
 		}
@@ -143,13 +137,13 @@ func jsonMarshalWriteMethod(info *types.Info, expr ast.Expr, receiver types.Obje
 	return call
 }
 
-func jsonMarshalWriteGuard(info *types.Info, stmt ast.Stmt, encoder types.Object, uses map[types.Object]int) *ast.ReturnStmt {
+func jsonMarshalWriteGuard(info *types.Info, stmt ast.Stmt, encoder types.Object, countUses func(types.Object) int) *ast.ReturnStmt {
 	guard, ok := stmt.(*ast.IfStmt)
 	if !ok || guard.Else != nil || len(guard.Body.List) != 1 {
 		return nil
 	}
 	err, value := fieldsLocal(info, guard.Init)
-	if err == nil || uses[err] != 2 || jsonMarshalWriteMethod(info, value, encoder, "Encode", 1) == nil {
+	if err == nil || countUses(err) != 2 || jsonMarshalWriteMethod(info, value, encoder, "Encode", 1) == nil {
 		return nil
 	}
 	cond, ok := ast.Unparen(guard.Cond).(*ast.BinaryExpr)
