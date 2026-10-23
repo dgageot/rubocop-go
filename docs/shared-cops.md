@@ -211,6 +211,10 @@ Production packages must still load through the shared SSA loader.
 `CancellationSafeResultSend` and `NonblockingChannelReplacement` inspect
 production packages only. They are
 local pattern checks, not proofs of deadlock or race freedom, and do not rewrite code.
+The loop checks recognize direct testing failures/skips, `runtime.Goexit`, and
+unconditional Testify failures with concrete `*testing.T`, `*testing.B`, or
+`*testing.F` arguments. Conditional assertions, unknown helpers, and interface-only
+test handles remain conservative; deferred or asynchronous exits do not stop the caller.
 
 - **CancellationLoop:** a `case <-ctx.Done(): break` inside `for { select { ... } }`
   only exits the select. Return or break the enclosing loop instead. Flags paths
