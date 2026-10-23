@@ -204,7 +204,7 @@ func (r *importResolver) resolve(dir string, files []*ast.File) types.Importer {
 	var parsed []*ast.File
 	fset := token.NewFileSet()
 	for _, path := range r.files[key] {
-		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments|parser.SkipObjectResolution)
+		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 		if err == nil {
 			parsed = append(parsed, file)
 		}
