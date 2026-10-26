@@ -121,20 +121,25 @@ allowlist without enabled cops runs zero cops.
 | An opt-in cop with only `severity` | The default cops |
 | `default_cops: false` | Only the cops with `enabled: true` |
 
-The CLI rejects names that are not shipped cops, including entries with
-`enabled: false`. Names are case-sensitive. The CLI reports all unknown names
-in sorted order and exits with status 1 before it inspects files:
+The CLI ignores names that are not shipped cops, as earlier versions did. Names
+are case-sensitive, so `lint/osexit` is also an unknown name. An entry with an
+unknown name does not select or disable a cop, and it does not change a
+severity. The CLI does not report unknown names, and they do not change the
+exit status. With `default_cops: false`, a file that contains only unknown
+names runs zero cops.
 
-```text
-Error: unknown cop names in .rubocop-go.yml: "Lint/Typo"
-```
+Because of this behavior, one file can also configure cops that only a custom
+embedded runner supplies. The tradeoff is that the CLI does not find typos. An
+entry with a misspelled name has no effect. It does not disable, select, or
+change the severity of the intended cop. Copy names from the
+[built-in cops](#built-in-cops) table or the
+[shared cop catalog](docs/shared-cops.md). The first output line,
+`Inspecting Go files with N cop(s)`, shows the number of cops that the CLI
+runs.
 
-This check is a deliberate change: earlier versions ignored unknown names. It
-finds typos. It also rejects a file that configures cops from a custom embedded
-runner. Embedded runners do not apply this check.
-
-The CLI also exits with status 1 for invalid YAML or a value of the wrong type.
-As before, it exits with status 1 when the analysis finds offenses.
+The CLI exits with status 1 for invalid YAML or a value of the wrong type,
+also in an entry with an unknown name. As before, it exits with status 1 when
+the analysis finds offenses.
 
 The configuration selects complete cops. It cannot restrict a cop to some paths
 or pass constructor options such as `cop.WithScope`. Use `//rubocop:disable`
@@ -191,10 +196,11 @@ See `examples/embed` for a runnable version of this pattern.
 
 `runner.New` and `WithProgramCops` filter the cops that you supply with
 `Config.IsEnabled`. The runner does not use the CLI catalog. It accepts any cop
-name and does not reject unknown names. A supplied cop runs unless the
-configuration disables it. With `default_cops: false`, only supplied cops with
-`enabled: true` run. `config.DefaultConfig()` and a zero-value `config.Config`
-run every supplied cop.
+name, and it ignores configured names that do not match a supplied cop. A
+supplied cop runs unless the configuration disables it. With
+`default_cops: false`, only supplied cops with `enabled: true` run.
+`config.DefaultConfig()` and a zero-value `config.Config` run every supplied
+cop.
 
 To select shipped cops the way the CLI does, use `cops.Catalog()` with
 `Config.IsEnabledWithDefault`. Then append your own cops:

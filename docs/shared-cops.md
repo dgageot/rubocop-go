@@ -67,7 +67,8 @@ cops:
 The CLI runs each selected cop in its canonical execution mode: file cops as
 file cops, and program-backed cops as program cops. An entry with only
 `severity` does not select a cop. Set `default_cops: false` to run only the
-cops that you enable. The CLI rejects unknown names before analysis. See the
+cops that you enable. The CLI ignores unknown names without a message, so a
+misspelled or wrong-case name selects nothing. See the
 [configuration rules](../README.md#configuration).
 
 CLI selection does not accept constructor options such as `cop.WithScope`, and

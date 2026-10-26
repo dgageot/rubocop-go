@@ -3,11 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
-	"maps"
 	"os"
-	"slices"
-	"strconv"
-	"strings"
 
 	"github.com/dgageot/rubocop-go/config"
 	"github.com/dgageot/rubocop-go/cop"
@@ -37,12 +33,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	fileCops, programCops, err := selectCops(cfg)
-	if err != nil {
-		fmt.Fprintf(stderr, "Error: %v\n", err)
-		return 1
-	}
-
+	fileCops, programCops := selectCops(cfg)
 	r := runner.New(fileCops, cfg, stdout).
 		WithProgramCops(programCops)
 
@@ -59,30 +50,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 // selectCops returns fresh instances of the catalog cops that cfg enables, in
-// catalog order. It rejects every configured name that is not in the catalog,
-// including disabled entries, before it constructs any cop.
-func selectCops(cfg *config.Config) ([]cop.Cop, []prog.Cop, error) {
-	catalog := cops.Catalog()
-	known := make(map[string]bool, len(catalog))
-	for _, e := range catalog {
-		known[e.Name] = true
-	}
-
-	var unknown []string
-	for _, name := range slices.Sorted(maps.Keys(cfg.Cops)) {
-		if !known[name] {
-			unknown = append(unknown, strconv.Quote(name))
-		}
-	}
-	if len(unknown) > 0 {
-		return nil, nil, fmt.Errorf("unknown cop names in %s: %s", configPath, strings.Join(unknown, ", "))
-	}
-
+// catalog order. Selection only looks up catalog names, so a configured name
+// that is not in the catalog has no effect.
+func selectCops(cfg *config.Config) ([]cop.Cop, []prog.Cop) {
 	var (
 		fileCops    []cop.Cop
 		programCops []prog.Cop
 	)
-	for _, e := range catalog {
+	for _, e := range cops.Catalog() {
 		if !cfg.IsEnabledWithDefault(e.Name, e.Default) {
 			continue
 		}
@@ -92,5 +67,5 @@ func selectCops(cfg *config.Config) ([]cop.Cop, []prog.Cop, error) {
 			programCops = append(programCops, e.Program())
 		}
 	}
-	return fileCops, programCops, nil
+	return fileCops, programCops
 }

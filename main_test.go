@@ -52,6 +52,32 @@ const (
 	missingPath        = "missing-path"
 )
 
+// unknownEntries configures names that are not in the catalog, as entries of a
+// cops map. It covers custom names, a typo, wrong-case spellings of shipped
+// cops, and enabled, disabled, severity-only, and null entries. None of these
+// entries may change selection, severities, output, or the exit status.
+const unknownEntries = `  Custom/Rule:
+    enabled: true
+  Custom/Disabled:
+    enabled: false
+  Lint/OsExti:
+    enabled: true
+  lint/osexit:
+    enabled: false
+  lint/wraperrors:
+    enabled: true
+  LINT/OSEXIT:
+    severity: convention
+  "Lint/Odd Name":
+    severity: error
+  Lint/Empty:
+`
+
+var unknownNames = []string{
+	"Custom/Rule", "Custom/Disabled", "Lint/OsExti", "lint/osexit",
+	"lint/wraperrors", "LINT/OSEXIT", "Lint/Odd Name", "Lint/Empty",
+}
+
 var (
 	defaultFileCops    = []string{"Lint/CloneCompleteness", "Lint/FmtPrint", "Lint/OsExit", "Style/EmptyFunc", "Style/ErrorNaming"}
 	defaultProgramCops = []string{"Lint/ContextConnectivity"}
@@ -205,40 +231,47 @@ func TestRunSelectsEveryShippedCop(t *testing.T) {
 	}
 }
 
-func TestRunRejectsUnknownCopNamesBeforeScanning(t *testing.T) {
+// TestRunIgnoresUnknownCopNames checks that names outside the catalog have no
+// effect, as before catalog selection: the CLI scans the files, runs only the
+// known selected cops, and does not mention the unknown names.
+func TestRunIgnoresUnknownCopNames(t *testing.T) {
 	for _, tc := range []struct {
-		name, config, want string
+		name, config string
+		cops         int
+		offenses     []string
 	}{
+		{name: "defaults", config: "cops:\n" + unknownEntries, cops: 6, offenses: []string{osExitOffense}},
+		{name: "explicit defaults", config: "default_cops: true\ncops:\n" + unknownEntries, cops: 6, offenses: []string{osExitOffense}},
 		{
-			name:   "disabled unknown name",
-			config: "default_cops: false\ncops:\n  Custom/Rule:\n    enabled: false\n",
-			want:   `Error: unknown cop names in .rubocop-go.yml: "Custom/Rule"` + "\n",
+			name:     "opt-in file and program cops",
+			config:   "cops:\n" + unknownEntries + "  Lint/WrapErrors:\n    enabled: true\n  Lint/ConstructorCommandExec:\n    enabled: true\n",
+			cops:     8,
+			offenses: []string{osExitOffense, wrapErrorsOffense, commandExecOffense},
 		},
 		{
-			name: "several unknown names",
-			config: `cops:
-  Lint/Nope:
-    enabled: true
-  lint/osexit:
-    enabled: false
-  Lint/OsExit:
-    enabled: true
-  Lint/Bogus:
-    severity: error
-  Lint/Empty:
-`,
-			want: `Error: unknown cop names in .rubocop-go.yml: "Lint/Bogus", "Lint/Empty", "Lint/Nope", "lint/osexit"` + "\n",
+			name: "allowlist with severity override",
+			config: "default_cops: false\ncops:\n" + unknownEntries +
+				"  Lint/WrapErrors:\n    enabled: true\n    severity: error\n  Lint/ConstructorCommandExec:\n    enabled: true\n",
+			cops:     2,
+			offenses: []string{"lib.go:14 E Lint/WrapErrors", commandExecOffense},
 		},
+		{name: "allowlist with only unknown names", config: "default_cops: false\ncops:\n" + unknownEntries, cops: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := newFixtureWithConfig(t, tc.config)
-			// Each run reloads the configuration into a new map.
-			for range 10 {
-				// A missing path proves that validation runs before file collection.
-				res := runCLI(t, dir, missingPath)
+			res := runCLI(t, newFixtureWithConfig(t, tc.config))
+
+			assert.Empty(t, res.stderr)
+			assert.Equal(t, tc.cops, res.copCount(), res.stdout)
+			assert.Equal(t, tc.offenses, res.offenses(), res.stdout)
+			for _, name := range unknownNames {
+				assert.NotContains(t, res.stdout, name)
+			}
+			if len(tc.offenses) == 0 {
+				assert.Equal(t, 0, res.code)
+				assert.Contains(t, res.stdout, "1 file(s) inspected, no offenses detected")
+			} else {
 				assert.Equal(t, 1, res.code)
-				assert.Empty(t, res.stdout)
-				assert.Equal(t, tc.want, res.stderr)
+				assert.Contains(t, res.stdout, "1 file(s) inspected")
 			}
 		})
 	}
@@ -249,6 +282,11 @@ func TestRunRejectsInvalidConfigBeforeScanning(t *testing.T) {
 		"cops: [\n",
 		"default_cops: maybe\n",
 		"cops:\n  Lint/OsExit:\n    enabled: sometimes\n",
+		// Entries with unknown names are still decoded, so their values must
+		// have the right types.
+		"cops:\n  Custom/Rule:\n    enabled: sometimes\n",
+		"cops:\n  Lint/Typo: 5\n",
+		"cops:\n  lint/osexit:\n    severity: [error]\n",
 	} {
 		t.Run(content, func(t *testing.T) {
 			res := runCLI(t, newFixtureWithConfig(t, content), missingPath)
@@ -261,11 +299,20 @@ func TestRunRejectsInvalidConfigBeforeScanning(t *testing.T) {
 }
 
 func TestRunReportsMissingPath(t *testing.T) {
-	res := runCLI(t, newFixtureWithConfig(t, "default_cops: false\n"), missingPath)
+	for _, tc := range []struct{ name, config string }{
+		{"allowlist", "default_cops: false\n"},
+		// Unknown names do not stop the CLI before it collects files.
+		{"unknown names", "cops:\n" + unknownEntries},
+		{"allowlist with only unknown names", "default_cops: false\ncops:\n" + unknownEntries},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := runCLI(t, newFixtureWithConfig(t, tc.config), missingPath)
 
-	assert.Equal(t, 1, res.code)
-	assert.Empty(t, res.stdout)
-	assert.True(t, strings.HasPrefix(res.stderr, "Error: stat missing-path: "), res.stderr)
+			assert.Equal(t, 1, res.code)
+			assert.Empty(t, res.stdout)
+			assert.True(t, strings.HasPrefix(res.stderr, "Error: stat missing-path: "), res.stderr)
+		})
+	}
 }
 
 func loadConfig(t *testing.T, content string) *config.Config {
@@ -333,10 +380,23 @@ func TestSelectCops(t *testing.T) {
 		{"allowlist with empty cops map", "default_cops: false\ncops: {}\n", nil, nil},
 		{"allowlist with severity only", "default_cops: false\ncops:\n  Lint/OsExit:\n    severity: error\n", nil, nil},
 		{"allowlist with explicit disable", "default_cops: false\ncops:\n  Lint/OsExit:\n    enabled: false\n", nil, nil},
+		{"unknown names only", "cops:\n" + unknownEntries, defaultFileCops, defaultProgramCops},
+		{
+			"known and unknown names",
+			"cops:\n" + unknownEntries + "  Lint/OsExit:\n    enabled: false\n  Lint/WrapErrors:\n    enabled: true\n  Lint/ConstructorCommandExec:\n    enabled: true\n",
+			[]string{"Lint/CloneCompleteness", "Lint/FmtPrint", "Lint/WrapErrors", "Style/EmptyFunc", "Style/ErrorNaming"},
+			[]string{"Lint/ConstructorCommandExec", "Lint/ContextConnectivity"},
+		},
+		{"allowlist with only unknown names", "default_cops: false\ncops:\n" + unknownEntries, nil, nil},
+		{
+			"allowlist with known and unknown names",
+			"default_cops: false\ncops:\n" + unknownEntries + "  Lint/NoFatalOutsideMain:\n    enabled: true\n  Lint/ContextConnectivity:\n    enabled: true\n",
+			[]string{"Lint/NoFatalOutsideMain"},
+			defaultProgramCops,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			files, programs, err := selectCops(loadConfig(t, tc.config))
-			require.NoError(t, err)
+			files, programs := selectCops(loadConfig(t, tc.config))
 			assert.Equal(t, tc.files, fileNames(files))
 			assert.Equal(t, tc.programs, programNames(programs))
 		})
@@ -345,15 +405,13 @@ func TestSelectCops(t *testing.T) {
 	t.Run("missing file", func(t *testing.T) {
 		cfg, err := config.Load(filepath.Join(t.TempDir(), configPath))
 		require.NoError(t, err)
-		files, programs, err := selectCops(cfg)
-		require.NoError(t, err)
+		files, programs := selectCops(cfg)
 		assert.Equal(t, defaultFileCops, fileNames(files))
 		assert.Equal(t, defaultProgramCops, programNames(programs))
 	})
 
 	t.Run("zero-value config", func(t *testing.T) {
-		files, programs, err := selectCops(&config.Config{})
-		require.NoError(t, err)
+		files, programs := selectCops(&config.Config{})
 		assert.Equal(t, defaultFileCops, fileNames(files))
 		assert.Equal(t, defaultProgramCops, programNames(programs))
 	})
@@ -371,11 +429,10 @@ func TestSelectCopsUsesCatalogOrder(t *testing.T) {
 	require.Len(t, wantFiles, 17)
 	require.Len(t, wantPrograms, 31)
 
-	cfg := loadConfig(t, enableAll(false))
+	cfg := loadConfig(t, enableAll(false)+unknownEntries)
 	var previous []cop.Cop
 	for range 20 {
-		files, programs, err := selectCops(cfg)
-		require.NoError(t, err)
+		files, programs := selectCops(cfg)
 		assert.Equal(t, wantFiles, fileNames(files))
 		assert.Equal(t, wantPrograms, programNames(programs))
 		if previous != nil {
@@ -385,12 +442,41 @@ func TestSelectCopsUsesCatalogOrder(t *testing.T) {
 	}
 }
 
-func TestSelectCopsRejectsUnknownNamesDeterministically(t *testing.T) {
-	cfg := loadConfig(t, "cops:\n  Z/Last:\n    enabled: false\n  A/First:\n  Lint/OsExit:\n    enabled: true\n  \"Lint/Odd Name\":\n    severity: error\n")
-	for range 20 {
-		files, programs, err := selectCops(cfg)
-		require.EqualError(t, err, `unknown cop names in .rubocop-go.yml: "A/First", "Lint/Odd Name", "Z/Last"`)
-		assert.Nil(t, files)
-		assert.Nil(t, programs)
+// TestSelectCopsIgnoresUnknownNamesDeterministically loads the configuration
+// into a new map in each iteration, so the map iteration order changes. The
+// selection must stay exact and in catalog order, with fresh instances.
+func TestSelectCopsIgnoresUnknownNamesDeterministically(t *testing.T) {
+	known := "  Lint/WrapErrors:\n    enabled: true\n  Lint/ConstructorCommandExec:\n    enabled: true\n"
+	for _, tc := range []struct {
+		name, config    string
+		files, programs []string
+	}{
+		{
+			"defaults", "cops:\n" + unknownEntries + known,
+			[]string{"Lint/CloneCompleteness", "Lint/FmtPrint", "Lint/OsExit", "Lint/WrapErrors", "Style/EmptyFunc", "Style/ErrorNaming"},
+			[]string{"Lint/ConstructorCommandExec", "Lint/ContextConnectivity"},
+		},
+		{
+			"allowlist", "default_cops: false\ncops:\n" + known + unknownEntries,
+			[]string{"Lint/WrapErrors"},
+			[]string{"Lint/ConstructorCommandExec"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var (
+				previousFile    cop.Cop
+				previousProgram prog.Cop
+			)
+			for range 20 {
+				files, programs := selectCops(loadConfig(t, tc.config))
+				require.Equal(t, tc.files, fileNames(files))
+				require.Equal(t, tc.programs, programNames(programs))
+				if previousFile != nil {
+					assert.NotSame(t, previousFile, files[0], "selection must construct fresh file cops")
+					assert.NotSame(t, previousProgram, programs[0], "selection must construct fresh program cops")
+				}
+				previousFile, previousProgram = files[0], programs[0]
+			}
+		})
 	}
 }
