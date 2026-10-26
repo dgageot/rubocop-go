@@ -1,7 +1,9 @@
 # Shared opt-in cops
 
-These cops are available through `cops.NewLint…` constructors. They are not
-included in `All()` or `AllProgram()`: consumers explicitly select their policies.
+These cops are not included in `All()` or `AllProgram()`, and the bundled CLI
+does not run them by default. Consumers explicitly select their policies: by
+name in `.rubocop-go.yml`, or with the `cops.NewLint…` constructors in an
+embedded runner.
 The catalog descriptions match each cop's `Meta.Description`.
 
 | Cop | Description | Target Go |
@@ -48,6 +50,30 @@ The catalog descriptions match each cop's `Meta.Description`.
 | `Lint/CancellationSafeResultSend` | Do not strand result senders when callers return on cancellation. | — |
 | `Lint/NonblockingChannelReplacement` | Keep channel replacement fallbacks nonblocking. | — |
 | `Lint/SlicesConcat` | Consider slices.Concat for concatenating slices into fresh storage. | 1.22+ |
+
+## Selecting with the CLI
+
+Set `enabled: true` for each cop that the CLI must run:
+
+```yaml
+cops:
+  Lint/WrapErrors:
+    enabled: true
+  Lint/SlicesConcat:
+    enabled: true
+    severity: warning
+```
+
+The CLI runs each selected cop in its canonical execution mode: file cops as
+file cops, and program-backed cops as program cops. An entry with only
+`severity` does not select a cop. Set `default_cops: false` to run only the
+cops that you enable. The CLI ignores unknown names without a message, so a
+misspelled or wrong-case name selects nothing. See the
+[configuration rules](../README.md#configuration).
+
+CLI selection does not accept constructor options such as `cop.WithScope`, and
+it cannot exclude paths. Use `//rubocop:disable` comments, or select the cop
+with a named constructor in an embedded runner.
 
 ## Embedding
 
