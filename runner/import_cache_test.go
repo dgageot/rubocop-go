@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -91,15 +92,19 @@ func TestImportResolverRejectsBrokenFiles(t *testing.T) {
 	isolateImportEnvironment(t)
 	dir := t.TempDir()
 	files := importFixture(t, dir, map[string]string{
-		"go.mod":    "module example.test\ngo 1.26\n",
-		"a.go":      "package p\nimport \"net/url\"\nvar _ url.URL\n",
-		"broken.go": "package p\nimport \"net/http\"\nfunc broken(\n",
+		"go.mod":     "module example.test\ngo 1.26\n",
+		"a.go":       "package p\nimport \"net/url\"\nvar _ url.URL\n",
+		"broken.go":  "package p\nimport \"net/http\"\nfunc broken(\n",
+		"comment.go": "package p\nimport \"fmt\"\n/* unterminated",
+		"body.go":    "package p\nimport \"strings\"\nfunc broken() { if }\n",
 	})
 	r := newImportResolver(files)
 	loaded, ok := r.resolve(dir, nil).(*resolvedImporter)
 	require.True(t, ok)
 	assert.Contains(t, loaded.packages, "net/url")
 	assert.NotContains(t, loaded.packages, "net/http")
+	require.NotContains(t, loaded.packages, "fmt")
+	require.NotContains(t, loaded.packages, "strings")
 }
 
 func TestImportResolverRefreshesBetweenRuns(t *testing.T) {
@@ -251,6 +256,26 @@ func TestImportResolverSharesPersistedFlags(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte("GOFLAGS=-mod=readonly -tags=integration,filestore\n"), 0o600))
 	t.Setenv("GOENV", path)
 	require.True(t, canShareImports())
+}
+
+func BenchmarkImportDiscoveryComments(b *testing.B) {
+	source := "package fixture\nimport \"net/http\"\n" + strings.Repeat("/* unused comment */\nvar _ = http.MethodGet\n", 1000)
+	for _, tc := range []struct {
+		name string
+		mode parser.Mode
+	}{
+		{"with-comments", parser.ParseComments | parser.SkipObjectResolution},
+		{"imports-discovery", parser.SkipObjectResolution},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", source, tc.mode)
+				require.NoError(b, err)
+				require.Equal(b, []string{"net/http"}, importPaths([]*ast.File{file}))
+			}
+		})
+	}
 }
 
 func BenchmarkImportResolver(b *testing.B) {
