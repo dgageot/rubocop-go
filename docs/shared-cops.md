@@ -219,8 +219,9 @@ test handles remain conservative; deferred or asynchronous exits do not stop the
 - **CancellationLoop:** a `case <-ctx.Done(): break` inside `for { select { ... } }`
   only exits the select. Return or break the enclosing loop instead. Flags paths
   that can revisit the same select after cancellation, including fallthrough and
-  `continue`. Conditional loops, context aliases, helper side effects, and custom
-  cancellation protocols are not proved.
+  `continue`. Recognizes matching `ctx.Err() != nil` exit guards before or after
+  the select; guards that continue spinning still warn. Conditional loops, context
+  aliases, helper side effects, and custom cancellation protocols are not proved.
 - **ClosedChannelLoop:** after `value, ok := <-ch`, leave the loop or disable/replace
   the channel when `!ok`. Tracks simple closure tests through local control flow
   in unconditional loops, including labelled exits. Receives without explicit
