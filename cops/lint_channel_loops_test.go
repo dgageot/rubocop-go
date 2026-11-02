@@ -38,6 +38,38 @@ func TestCancellationLoop(t *testing.T) {
 		{"safe labelled break", `outer: for { select { case <-ctx.Done(): break outer; case <-ch: } }`, 0},
 		{"safe after select", `for { select { case <-ctx.Done(): break; case <-ch: }; return }`, 0},
 		{"safe conditional after select", `for { select { case <-ctx.Done(): break; case <-ch: }; if yes { return } }`, 1},
+		{"error guard before select", `for { if ctx.Err()!=nil { return }; select { case <-ctx.Done(): case <-ch: } }`, 0},
+		{"error guard after select", `for { select { case <-ctx.Done(): break; case <-ch: }; if ctx.Err()!=nil { return } }`, 0},
+		{"error guard labelled break", `outer: for { if ctx.Err()!=nil { break outer }; select { case <-ctx.Done(): continue; case <-ch: } }`, 0},
+		{"error guard nil first", `for { if nil!=ctx.Err() { return }; select { case <-ctx.Done(): case <-ch: } }`, 0},
+		{"error guard else", `for { if ctx.Err()==nil {} else { return }; select { case <-ctx.Done(): case <-ch: } }`, 0},
+		{"error guard parentheses", `for { if ((ctx.Err)())!=(nil) { return }; select { case <-(ctx.Done)(): case <-ch: } }`, 0},
+		{"error guard tagless switch", `for { switch { case ctx.Err()!=nil: return }; select { case <-ctx.Done(): case <-ch: } }`, 0},
+		{"error guard context field", `state:=struct{ctx context.Context}{ctx}; for { if state.ctx.Err()!=nil { return }; select { case <-state.ctx.Done(): case <-ch: } }`, 0},
+		{"unrelated error guard", `for { if other.Err()!=nil { return }; select { case <-ctx.Done(): case <-ch: } }`, 1},
+		{"unrelated context field guard", `state:=struct{ctx,other context.Context}{ctx,other}; for { if state.other.Err()!=nil { return }; select { case <-state.ctx.Done(): case <-ch: } }`, 1},
+		{"shadowed context error guard", `for { { ctx:=other; if ctx.Err()!=nil { return } }; select { case <-ctx.Done(): case <-ch: } }`, 1},
+		{"shadowed nil error guard", `nil:=other.Err(); for { if ctx.Err()!=nil { return }; select { case <-ctx.Done(): case <-ch: } }`, 1},
+		{"error guard keeps looping", `for { if ctx.Err()!=nil { continue }; select { case <-ctx.Done(): case <-ch: } }`, 1},
+		{"error guard reaches select", `for { if ctx.Err()!=nil { println("cancelled") }; select { case <-ctx.Done(): case <-ch: } }`, 1},
+		{"spinning guard before exit guard", `for { if ctx.Err()!=nil { continue }; if ctx.Err()!=nil { return }; select { case <-ctx.Done(): case <-ch: } }`, 1},
+		{"spinning guard after select before exit guard", `for { select { case <-ctx.Done(): case <-ch: }; if ctx.Err()!=nil { continue }; if ctx.Err()!=nil { return } }`, 1},
+		{"nonterminal guard remains conservative", `for { if ctx.Err()!=nil { println("cancelled") }; if ctx.Err()!=nil { return }; select { case <-ctx.Done(): case <-ch: } }`, 1},
+		{"error guard wrong branch", `for { if ctx.Err()==nil { return }; select { case <-ctx.Done(): case <-ch: } }`, 1},
+		{"error guard conditional exit", `for { if ctx.Err()!=nil { if yes { return } }; select { case <-ctx.Done(): case <-ch: } }`, 1},
+		{"error guard before cancellation only", `if ctx.Err()!=nil { return }; for { select { case <-ctx.Done(): case <-ch: } }`, 1},
+		{"stored error before cancellation", `err:=ctx.Err(); for { if err!=nil { return }; select { case <-ctx.Done(): case <-ch: } }`, 1},
+		{"parent and child error guards", `ctx,cancel:=context.WithCancel(other); defer cancel(); for { if other.Err()!=nil { return }; if ctx.Err()!=nil { return }; select { case <-ctx.Done(): case <-ch: } }`, 0},
+		{"error guard both branches exit", `for { if ctx.Err()!=nil { if yes { return } else { panic("stop") } }; select { case <-ctx.Done(): case <-ch: } }`, 0},
+		{"error guard shared return", `for { if ctx.Err()!=nil { if yes { println("cancelled") } else { println("stopped") }; return }; select { case <-ctx.Done(): case <-ch: } }`, 0},
+		{"error guard infinite loop", `for { if ctx.Err()!=nil { for {} }; select { case <-ctx.Done(): case <-ch: } }`, 1},
+		{"error guard goto cycle", `for { if ctx.Err()!=nil { retry: println("cancelled"); goto retry }; select { case <-ctx.Done(): case <-ch: } }`, 1},
+		{"error guard labelled continue", `outer: for { if ctx.Err()!=nil { continue outer }; select { case <-ctx.Done(): case <-ch: } }`, 1},
+		{"error guard break then reenter", `retry: for { if ctx.Err()!=nil { break }; select { case <-ctx.Done(): case <-ch: } }; goto retry`, 1},
+		{"error guard blocks forever", `for { if ctx.Err()!=nil { select {} }; select { case <-ctx.Done(): case <-ch: } }`, 1},
+		{"error guard blocking select", `for { if ctx.Err()!=nil { select { case <-ch: return } }; select { case <-ctx.Done(): case <-ch: } }`, 1},
+		{"error guard tagged switch", `for { switch false { case ctx.Err()!=nil: return }; select { case <-ctx.Done(): case <-ch: } }`, 1},
+		{"overridden error method", `wrapped:=wrappedContext{ctx}; for { if wrapped.Err()!=nil { return }; select { case <-wrapped.Done(): case <-ch: } }`, 1},
 		{"conditional loop", `for yes { select { case <-ctx.Done(): yes=false; case <-ch: } }`, 0},
 		{"replace context", `for { select { case <-ctx.Done(): ctx = other; case <-ch: } }`, 0},
 		{"panic", `for { select { case <-ctx.Done(): panic("stop"); case <-ch: } }`, 0},
@@ -54,6 +86,8 @@ func TestCancellationLoop(t *testing.T) {
 import "context"
 type fake struct{}
 func(fake) Done() <-chan struct{} { return nil }
+type wrappedContext struct{ context.Context }
+func(wrappedContext) Err() error { return nil }
 func f(ctx,other context.Context, ch chan int, yes bool) { _=ctx; _=other; ` + tc.body + ` }`
 	}
 	offenses := coptest.RunProgram(t, NewLintCancellationLoop(), files)
@@ -105,12 +139,14 @@ func TestClosedChannelLoop(t *testing.T) {
 		{"closure", `go func(){ for { _,ok:=<-ch; if !ok { continue } } }()`, 1},
 		{"panic", `for { _,ok:=<-ch; if !ok { panic("closed") } }`, 0},
 		{"ok overwritten", `for { _,ok:=<-ch; ok=yes; if !ok { continue } }`, 0},
+		{"context error guard cannot prove channel closure", `for { if ctx.Err()!=nil { return }; _,ok:=<-ch; if !ok { continue } }`, 1},
 		{"nil only on one path", `for { _,ok:=<-ch; if !ok { if yes { ch=nil }; continue } }`, 1},
 	}
 	files := coptest.ProgramFiles{}
 	for i, tc := range tests {
 		files[fmt.Sprintf("case%d/sample.go", i)] = `package p
-func f(ch,other chan int, yes bool, replacements chan chan int, flags chan bool) { _=other; ` + tc.body + ` }`
+import "context"
+func f(ctx context.Context, ch,other chan int, yes bool, replacements chan chan int, flags chan bool) { _=other; ` + tc.body + ` }`
 	}
 	offenses := coptest.RunProgram(t, NewLintClosedChannelLoop(), files)
 	counts := make(map[string]int)

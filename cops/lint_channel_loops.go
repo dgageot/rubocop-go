@@ -220,9 +220,10 @@ func channelLoopCandidates(p *cop.Pass, body *ast.BlockStmt, cancellation bool) 
 }
 
 type channelLoopPoint struct {
-	block  *cfg.Block
-	index  int
-	closed bool
+	block         *cfg.Block
+	index         int
+	closed        bool
+	unprovenGuard bool
 }
 
 type channelLoopFlow struct {
@@ -276,6 +277,7 @@ func channelLoopRepeats(p *cop.Pass, flow channelLoopFlow, candidate channelLoop
 	start.closed = candidate.ok == nil
 	queue := []channelLoopPoint{start}
 	seen := make(map[channelLoopPoint]bool)
+	exits := make(map[*cfg.Block]bool)
 	for len(queue) > 0 {
 		point := queue[0]
 		queue = queue[1:]
@@ -305,20 +307,93 @@ func channelLoopRepeats(p *cop.Pass, flow channelLoopFlow, candidate channelLoop
 		if blocked {
 			continue
 		}
-		for edge, next := range point.block.Succs {
-			if candidate.ok != nil && len(point.block.Succs) == 2 && len(point.block.Nodes) > 0 {
-				expr, _ := point.block.Nodes[len(point.block.Nodes)-1].(ast.Expr)
-				if value, known := flow.condition(p, expr, candidate.ok); known {
-					point.closed = true
-					if value != (edge == 0) {
-						continue
+		var value, known bool
+		if len(point.block.Succs) == 2 && len(point.block.Nodes) > 0 {
+			expr, _ := point.block.Nodes[len(point.block.Nodes)-1].(ast.Expr)
+			if candidate.ok != nil {
+				value, known = flow.condition(p, expr, candidate.ok)
+				point.closed = point.closed || known
+			} else if !point.unprovenGuard {
+				value, known = flow.cancellationCondition(p, expr, candidate)
+				if known {
+					exitEdge := 1
+					if value {
+						exitEdge = 0
+					}
+					if !channelLoopAlwaysExits(p, point.block.Succs[exitEdge], exits) {
+						// Later exit guards cannot hide a spin at this guard.
+						point.unprovenGuard = true
+						known = false
 					}
 				}
 			}
-			queue = append(queue, channelLoopPoint{block: next, closed: point.closed})
+		}
+		for edge, next := range point.block.Succs {
+			if known && value != (edge == 0) {
+				continue
+			}
+			queue = append(queue, channelLoopPoint{block: next, closed: point.closed, unprovenGuard: point.unprovenGuard})
 		}
 	}
 	return false
+}
+
+func (flow channelLoopFlow) cancellationCondition(p *cop.Pass, expr ast.Expr, candidate channelLoopCandidate) (bool, bool) {
+	if tag, found := flow.conditions[expr]; !found || tag != nil {
+		return false, false
+	}
+	binary, ok := ast.Unparen(expr).(*ast.BinaryExpr)
+	if !ok || (binary.Op != token.EQL && binary.Op != token.NEQ) {
+		return false, false
+	}
+	done := ast.Unparen(candidate.ch).(*ast.CallExpr)
+	receiver := ast.Unparen(done.Fun).(*ast.SelectorExpr).X
+	for _, pair := range [][2]ast.Expr{{binary.X, binary.Y}, {binary.Y, binary.X}} {
+		id, ok := ast.Unparen(pair[1]).(*ast.Ident)
+		if !ok || p.Info.ObjectOf(id) != types.Universe.Lookup("nil") {
+			continue
+		}
+		call, ok := ast.Unparen(pair[0]).(*ast.CallExpr)
+		if !ok || len(call.Args) != 0 {
+			continue
+		}
+		fn, ok := p.CalleeObject(call).(*types.Func)
+		if !ok || fn.Pkg() == nil || fn.Pkg().Path() != "context" || fn.Name() != "Err" {
+			continue
+		}
+		sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+		if ok && channelLoopSame(p, sel.X, receiver) {
+			return binary.Op == token.NEQ, true
+		}
+	}
+	return false, false
+}
+
+func channelLoopAlwaysExits(p *cop.Pass, block *cfg.Block, exits map[*cfg.Block]bool) bool {
+	if exits, seen := exits[block]; seen {
+		return exits
+	}
+	// Mark visiting blocks as non-exiting so a cycle cannot prove termination.
+	exits[block] = false
+	if len(block.Succs) == 0 {
+		if block.Return() != nil {
+			exits[block] = true
+		} else if len(block.Nodes) > 0 {
+			if stmt, ok := block.Nodes[len(block.Nodes)-1].(*ast.ExprStmt); ok {
+				if call, ok := ast.Unparen(stmt.X).(*ast.CallExpr); ok {
+					exits[block] = channelLoopExits(p, call)
+				}
+			}
+		}
+		return exits[block]
+	}
+	for _, next := range block.Succs {
+		if !channelLoopAlwaysExits(p, next, exits) {
+			return false
+		}
+	}
+	exits[block] = true
+	return true
 }
 
 func (flow channelLoopFlow) condition(p *cop.Pass, expr ast.Expr, result types.Object) (bool, bool) {
