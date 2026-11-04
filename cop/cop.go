@@ -33,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/importer"
 	"go/token"
 	"go/types"
 	"go/version"
@@ -107,18 +108,43 @@ type Pass struct {
 	typedFiles func() ([]*Pass, error)
 }
 
-// TypedFiles returns the active package variants of this file in load order.
-// Each view has matched FileSet, File, Info and Package fields from a separate
-// AST. Treat these views and their shared type graph as read-only; positions and
-// nodes must not be mixed with those of the receiving pass. Report diagnostics
-// through the receiving pass, using ReportOffense to preserve view positions.
-// An empty result means the file is inactive in the current build. An error
-// means views are unavailable and callers may use their own local loader.
+// TypedFiles returns read-only typed views of this file. The runner supplies
+// shared package variants in load order, falling back to a local package load.
+// Without a provider, it reuses existing type information or best-effort checks
+// the current AST alone; type errors may leave that view incomplete.
+// Each view's FileSet, File, Info and Package belong together: do not mix nodes
+// or positions between views. Report through the receiving pass, using
+// ReportOffense to preserve view positions. An empty result means the file is
+// inactive in the current build; an error means views are unavailable.
 func (p *Pass) TypedFiles() ([]*Pass, error) {
-	if p.typedFiles == nil {
-		return nil, errors.New("typed file views unavailable")
+	if p.typedFiles != nil {
+		return p.typedFiles()
 	}
-	return p.typedFiles()
+	info, pkg := p.Info, p.Package
+	if info == nil || pkg == nil {
+		if p.FileSet == nil || p.File == nil {
+			return nil, errors.New("typed file views unavailable")
+		}
+		info = &types.Info{
+			Types:        make(map[ast.Expr]types.TypeAndValue),
+			Defs:         make(map[*ast.Ident]types.Object),
+			Uses:         make(map[*ast.Ident]types.Object),
+			Selections:   make(map[*ast.SelectorExpr]*types.Selection),
+			Instances:    make(map[*ast.Ident]types.Instance),
+			Implicits:    make(map[ast.Node]types.Object),
+			Scopes:       make(map[ast.Node]*types.Scope),
+			FileVersions: make(map[*ast.File]string),
+		}
+		cfg := types.Config{
+			Importer: importer.ForCompiler(p.FileSet, "gc", nil),
+			Error:    func(error) {}, // Keep checking after errors for partial type information.
+		}
+		pkg, _ = cfg.Check(p.PackageName(), p.FileSet, []*ast.File{p.File}, info)
+	}
+	return []*Pass{{
+		Cop: p.Cop, FileSet: p.FileSet, File: p.File,
+		Info: info, Package: pkg, SeverityOverride: p.SeverityOverride,
+	}}, nil
 }
 
 // SetTypedFiles lets custom runners provide lazy views for TypedFiles. Set it
