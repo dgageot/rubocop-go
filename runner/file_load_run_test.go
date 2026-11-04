@@ -169,52 +169,24 @@ func TestSharedFileLoadPreservesReportingAndFallback(t *testing.T) {
 		"inactive/p.go":   "//go:build lint_disabled_fixture\n\npackage inactive\nvar Value int\n",
 		"syntax/p.go":     "package syntax\nfunc broken(\n",
 	})
-	run := func(shared bool) string {
-		var out bytes.Buffer
-		fallbacks, empty := 0, 0
-		report := cop.New(cop.Meta{Name: "Test/Report", Severity: cop.Warning}, func(p *cop.Pass) {
-			p.Report(p.File, "found")
-		})
-		local := WithDirectoryTypes(report)
-		wrapper := cop.New(cop.Meta{Name: "Test/Report"}, func(p *cop.Pass) {
-			if !shared {
-				p.SetTypedFiles(nil)
-			}
-			views, err := p.TypedFiles()
-			if err != nil {
-				fallbacks++
-				local.Check(p)
-				return
-			}
-			if len(views) == 0 {
-				empty++
-				return
-			}
-			view := views[0]
-			p.ReportOffense(cop.NewOffense(report, view.FileSet, view.File, "found"))
-		})
-		cfg := config.DefaultConfig()
-		cfg.Cops["Test/Report"] = config.CopConfig{Severity: "error"}
-		r := New([]cop.Cop{wrapper}, cfg, io.Discard)
-		r.Reporter = NewJSONReporter(&out)
-		count, err := r.Run([]string{dir})
+	var out bytes.Buffer
+	report := cop.New(cop.Meta{Name: "Test/Report", Severity: cop.Warning}, func(p *cop.Pass) {
+		views, err := p.TypedFiles()
 		require.NoError(t, err)
-		if shared {
-			assert.Equal(t, 1, fallbacks)
-			assert.Equal(t, 1, empty)
-			assert.Equal(t, 2, count)
-		} else {
-			assert.Equal(t, 4, fallbacks)
-			assert.Zero(t, empty)
-			assert.Equal(t, 3, count)
-		}
-		return out.String()
-	}
-	assert.Contains(t, run(false), `"files_inspected": 4`)
-	got := run(true)
-	assert.Contains(t, got, `"files_inspected": 4`)
-	assert.Contains(t, got, `"severity": "error"`)
-	assert.NotContains(t, got, "suppressed/p.go")
+		require.NotEmpty(t, views)
+		view := views[0]
+		p.ReportOffense(cop.NewOffense(p.Cop, view.FileSet, view.File, "found"))
+	})
+	cfg := config.DefaultConfig()
+	cfg.Cops["Test/Report"] = config.CopConfig{Severity: "error"}
+	r := New([]cop.Cop{report}, cfg, io.Discard)
+	r.Reporter = NewJSONReporter(&out)
+	count, err := r.Run([]string{dir})
+	require.NoError(t, err)
+	assert.Equal(t, 3, count)
+	assert.Contains(t, out.String(), `"files_inspected": 4`)
+	assert.Contains(t, out.String(), `"severity": "error"`)
+	assert.NotContains(t, out.String(), "suppressed/p.go")
 }
 
 func TestSharedFileLoadDoesNotChangeExistingCops(t *testing.T) {

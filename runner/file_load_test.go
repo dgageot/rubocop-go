@@ -42,13 +42,13 @@ func TestSharedFileLoaderVariantsAndIdentity(t *testing.T) {
 	}
 	assert.Zero(t, loads)
 	c := cop.New(cop.Meta{Name: "Test/Views"}, nil)
-	views, err := l.typedFiles(filepath.Join(dir, "a", "a.go"), c)
+	views, err := l.sharedTypedFiles(filepath.Join(dir, "a", "a.go"), c)
 	require.NoError(t, err)
 	require.Len(t, views, 2, "production and augmented test variants")
 	assert.NotSame(t, views[0].Package, views[1].Package)
 
 	for _, name := range files {
-		got, err := l.typedFiles(name, c)
+		got, err := l.sharedTypedFiles(name, c)
 		require.NoError(t, err)
 		var want []*cop.Pass
 		for _, pkg := range roots {
@@ -67,14 +67,16 @@ func TestSharedFileLoaderVariantsAndIdentity(t *testing.T) {
 			assert.Same(t, c, view.Cop)
 			assert.Nil(t, view.SeverityOverride)
 			assert.Empty(t, view.Offenses())
-			_, err := view.TypedFiles()
-			require.EqualError(t, err, "typed file views unavailable")
+			reused, err := view.TypedFiles()
+			require.NoError(t, err)
+			require.Len(t, reused, 1)
+			assert.Same(t, view.Info, reused[0].Info)
 		}
 	}
-	inactive, err := l.typedFiles(filepath.Join(dir, "a", "inactive.go"), c)
+	inactive, err := l.sharedTypedFiles(filepath.Join(dir, "a", "inactive.go"), c)
 	require.NoError(t, err)
 	assert.Nil(t, inactive)
-	b, err := l.typedFiles(filepath.Join(dir, "b", "b.go"), c)
+	b, err := l.sharedTypedFiles(filepath.Join(dir, "b", "b.go"), c)
 	require.NoError(t, err)
 	require.Len(t, b, 1)
 	request := b[0].Package.Scope().Lookup("Request").Type().Underlying().(*types.Struct)
@@ -88,7 +90,7 @@ func TestSharedFileLoaderVariantsAndIdentity(t *testing.T) {
 	for _, view := range views {
 		assert.True(t, types.Identical(urlType, view.Package.Scope().Lookup("URL").Type()))
 	}
-	again, err := l.typedFiles(filepath.Join(dir, "a", "a.go"), c)
+	again, err := l.sharedTypedFiles(filepath.Join(dir, "a", "a.go"), c)
 	require.NoError(t, err)
 	assert.NotSame(t, views[0], again[0], "each request owns its pass, but shares read-only AST and types")
 	assert.Same(t, views[0].File, again[0].File)
@@ -117,7 +119,7 @@ func TestSharedFileLoaderSeparatesNestedModules(t *testing.T) {
 		return packages.Load(cfg, patterns...)
 	}
 	for _, i := range []int{2, 0, 1, 0, 2} {
-		views, err := l.typedFiles(files[i], nil)
+		views, err := l.sharedTypedFiles(files[i], nil)
 		require.NoError(t, err)
 		require.Len(t, views, 1)
 		if i != 1 {
@@ -156,14 +158,14 @@ func TestSharedFileLoaderDirectoryErrors(t *testing.T) {
 	}
 	for range 2 {
 		for _, subdir := range []string{"badtest", "badexternal", "baddep", "dep", "missing", "syntax"} {
-			views, err := l.typedFiles(filepath.Join(dir, subdir, "p.go"), nil)
+			views, err := l.sharedTypedFiles(filepath.Join(dir, subdir, "p.go"), nil)
 			require.Error(t, err, subdir)
 			assert.Nil(t, views)
 		}
-		views, err := l.typedFiles(filepath.Join(dir, "healthy", "p.go"), nil)
+		views, err := l.sharedTypedFiles(filepath.Join(dir, "healthy", "p.go"), nil)
 		require.NoError(t, err)
 		assert.Len(t, views, 1)
-		views, err = l.typedFiles(filepath.Join(dir, "inactive", "p.go"), nil)
+		views, err = l.sharedTypedFiles(filepath.Join(dir, "inactive", "p.go"), nil)
 		require.NoError(t, err)
 		assert.Nil(t, views)
 	}
@@ -187,7 +189,7 @@ func TestSharedFileLoaderCachesBatchFailure(t *testing.T) {
 	}
 	for range 2 {
 		for _, file := range files {
-			views, err := l.typedFiles(file, nil)
+			views, err := l.sharedTypedFiles(file, nil)
 			require.ErrorIs(t, err, failure)
 			assert.Nil(t, views)
 		}
@@ -218,7 +220,7 @@ func TestSharedFileLoaderUnavailable(t *testing.T) {
 				return nil, nil
 			}
 			for range 2 {
-				views, err := l.typedFiles(files[0], nil)
+				views, err := l.sharedTypedFiles(files[0], nil)
 				require.ErrorContains(t, err, "typed file views unavailable")
 				assert.Nil(t, views)
 			}
@@ -244,7 +246,7 @@ func TestSharedFileLoaderConcurrentRequests(t *testing.T) {
 	for range 16 {
 		for _, file := range files {
 			wg.Go(func() {
-				views, err := l.typedFiles(file, nil)
+				views, err := l.sharedTypedFiles(file, nil)
 				if assert.NoError(t, err) && assert.Len(t, views, 1) {
 					ast.Inspect(views[0].File, func(n ast.Node) bool {
 						if id, ok := n.(*ast.Ident); ok && id.Name == "Value" {
@@ -277,10 +279,10 @@ func Value() int { return int(C.value()) }
 		"plain.go": "package native\nvar Plain int\n",
 	})
 	l := newSharedFileLoader(files)
-	views, err := l.typedFiles(filepath.Join(dir, "native.go"), nil)
+	views, err := l.sharedTypedFiles(filepath.Join(dir, "native.go"), nil)
 	require.ErrorContains(t, err, "rewritten source")
 	assert.Nil(t, views)
-	views, err = l.typedFiles(filepath.Join(dir, "plain.go"), nil)
+	views, err = l.sharedTypedFiles(filepath.Join(dir, "plain.go"), nil)
 	require.NoError(t, err)
 	require.Len(t, views, 1)
 	assert.NotNil(t, views[0].Package.Scope().Lookup("Value"))

@@ -167,7 +167,7 @@ func (r *Runner) runCops(fset *token.FileSet, file *ast.File, info *types.Info, 
 		p := &cop.Pass{Cop: c, FileSet: fset, File: file, Info: info, Package: pkg}
 		if sharedFiles != nil {
 			p.SetTypedFiles(func() ([]*cop.Pass, error) {
-				return sharedFiles.typedFiles(p.Filename(), c)
+				return sharedFiles.typedFiles(p)
 			})
 		}
 		if s, ok := c.(cop.Scoped); ok && !s.InScope(p) {

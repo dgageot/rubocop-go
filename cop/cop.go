@@ -114,8 +114,8 @@ type Pass struct {
 // the current AST alone; type errors may leave that view incomplete.
 // Each view's FileSet, File, Info and Package belong together: do not mix nodes
 // or positions between views. Report through the receiving pass, using
-// ReportOffense to preserve view positions. An empty result means the file is
-// inactive in the current build; an error means views are unavailable.
+// ReportOffense to preserve view positions. The runner also checks inactive and
+// unloadable files best-effort. Custom providers may return no views or an error.
 func (p *Pass) TypedFiles() ([]*Pass, error) {
 	if p.typedFiles != nil {
 		return p.typedFiles()

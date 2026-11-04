@@ -20,6 +20,7 @@ type sharedFileLoader struct {
 	contexts map[string]string
 	dirs     map[string][]string
 	batches  map[string]*typedFileBatch
+	local    map[string]*typedFileBatch
 	err      error
 	load     func(*packages.Config, ...string) ([]*packages.Package, error)
 }
@@ -60,7 +61,68 @@ func (l *sharedFileLoader) init() {
 	}
 }
 
-func (l *sharedFileLoader) typedFiles(filename string, c cop.Cop) ([]*cop.Pass, error) {
+// typedFiles owns the fallback chain so cops only need to inspect the views.
+func (l *sharedFileLoader) typedFiles(p *cop.Pass) ([]*cop.Pass, error) {
+	views, err := l.sharedTypedFiles(p.Filename(), p.Cop)
+	if err == nil && len(views) != 0 {
+		return views, nil
+	}
+	views = l.localTypedFiles(p.Filename(), p.Cop)
+	if len(views) != 0 {
+		return views, nil
+	}
+	fallback := &cop.Pass{Cop: p.Cop, FileSet: p.FileSet, File: p.File, SeverityOverride: p.SeverityOverride}
+	return fallback.TypedFiles()
+}
+
+func (l *sharedFileLoader) localTypedFiles(filename string, c cop.Cop) []*cop.Pass {
+	name, err := filepath.Abs(filename)
+	if err != nil {
+		return nil
+	}
+	dir := filepath.Dir(name)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.local == nil {
+		l.local = make(map[string]*typedFileBatch)
+	}
+	batch := l.local[dir]
+	if batch == nil {
+		loaded, err := l.load(&packages.Config{
+			Dir: dir, Tests: true,
+			Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |
+				packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedImports,
+		}, ".")
+		batch = &typedFileBatch{files: make(map[string][]*cop.Pass), err: err}
+		if err == nil {
+			for _, pkg := range loaded {
+				if pkg.Fset == nil || pkg.TypesInfo == nil {
+					continue
+				}
+				for _, file := range pkg.Syntax {
+					filename := filepath.Clean(pkg.Fset.PositionFor(file.Pos(), false).Filename)
+					batch.files[filename] = append(batch.files[filename], &cop.Pass{
+						FileSet: pkg.Fset, File: file, Info: pkg.TypesInfo, Package: pkg.Types,
+					})
+				}
+			}
+		}
+		l.local[dir] = batch
+	}
+	return copyTypedViews(batch.files[name], c)
+}
+
+func copyTypedViews(views []*cop.Pass, c cop.Cop) []*cop.Pass {
+	var copies []*cop.Pass
+	for _, view := range views {
+		copies = append(copies, &cop.Pass{
+			Cop: c, FileSet: view.FileSet, File: view.File, Info: view.Info, Package: view.Package,
+		})
+	}
+	return copies
+}
+
+func (l *sharedFileLoader) sharedTypedFiles(filename string, c cop.Cop) ([]*cop.Pass, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.contexts == nil {
@@ -92,14 +154,7 @@ func (l *sharedFileLoader) typedFiles(filename string, c cop.Cop) ([]*cop.Pass, 
 	if err := batch.errors[name]; err != nil {
 		return nil, err
 	}
-	var views []*cop.Pass
-	for _, view := range batch.files[name] {
-		views = append(views, &cop.Pass{
-			Cop: c, FileSet: view.FileSet, File: view.File,
-			Info: view.Info, Package: view.Package,
-		})
-	}
-	return views, nil
+	return copyTypedViews(batch.files[name], c), nil
 }
 
 func (l *sharedFileLoader) loadBatch(dirs []string) *typedFileBatch {
