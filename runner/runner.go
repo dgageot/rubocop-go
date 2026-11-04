@@ -96,6 +96,7 @@ func (r *Runner) Run(paths []string) (int, error) {
 	var allOffenses []cop.Offense
 	filesInspected := 0
 	fset := token.NewFileSet()
+	sharedFiles := newSharedFileLoader(files)
 
 	if r.needsTypes {
 		// Group files by directory and type-check per package so type-aware
@@ -112,7 +113,7 @@ func (r *Runner) Run(paths []string) (int, error) {
 			info, pkg := typeCheckWithImporter(fset, dir, parsed, imports.resolve(dir, parsed))
 
 			for i, pf := range parsed {
-				fileOffenses := r.runCops(fset, pf, info, pkg)
+				fileOffenses := r.runCops(fset, pf, info, pkg, sharedFiles)
 				filesInspected++
 				r.Reporter.FileFinished(parsedPaths[i], fileOffenses)
 				allOffenses = append(allOffenses, fileOffenses...)
@@ -127,7 +128,7 @@ func (r *Runner) Run(paths []string) (int, error) {
 				continue
 			}
 
-			fileOffenses := r.runCops(fset, f, nil, nil)
+			fileOffenses := r.runCops(fset, f, nil, nil, sharedFiles)
 			filesInspected++
 			r.Reporter.FileFinished(path, fileOffenses)
 			allOffenses = append(allOffenses, fileOffenses...)
@@ -158,12 +159,17 @@ func (r *Runner) Run(paths []string) (int, error) {
 }
 
 // runCops invokes every enabled cop against the file and returns the merged offense list.
-func (r *Runner) runCops(fset *token.FileSet, file *ast.File, info *types.Info, pkg *types.Package) []cop.Offense {
+func (r *Runner) runCops(fset *token.FileSet, file *ast.File, info *types.Info, pkg *types.Package, sharedFiles *sharedFileLoader) []cop.Offense {
 	sup := cop.ScanSuppressions(fset, file)
 
 	var offenses []cop.Offense
 	for _, c := range r.Cops {
 		p := &cop.Pass{Cop: c, FileSet: fset, File: file, Info: info, Package: pkg}
+		if sharedFiles != nil {
+			p.SetTypedFiles(func() ([]*cop.Pass, error) {
+				return sharedFiles.typedFiles(p)
+			})
+		}
 		if s, ok := c.(cop.Scoped); ok && !s.InScope(p) {
 			continue
 		}

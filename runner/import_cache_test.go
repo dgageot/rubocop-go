@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"io"
 	"os"
 	"path/filepath"
@@ -239,7 +240,7 @@ func wrap(err error) error { return fmt.Errorf("%w", err) }
 			require.NoError(t, err)
 			parsed := []*ast.File{file}
 			info, pkg := typeCheckWithImporter(fset, filepath.Dir(path), parsed, resolver.resolve(filepath.Dir(path), parsed))
-			offenses = append(offenses, r.runCops(fset, file, info, pkg)...)
+			offenses = append(offenses, r.runCops(fset, file, info, pkg, nil)...)
 		}
 		return offenses
 	}
@@ -351,6 +352,12 @@ func TestImportResolverBatchFailureRetainsLocalImports(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, pkg.Scope().Lookup("Value"))
 	assert.True(t, r.failed[r.contexts[filepath.Join(dir, "a")]])
+	assert.Empty(t, r.loaded)
+	assert.Same(t, loaded, r.resolve(filepath.Join(dir, "a"), []*ast.File{file}))
+	broken := r.resolve(filepath.Join(dir, "broken"), nil)
+	assert.Same(t, broken, r.resolve(filepath.Join(dir, "broken"), nil))
+	_, err = broken.Import("\x00")
+	require.Error(t, err)
 }
 
 func TestImportResolverFallsBackForImportCycles(t *testing.T) {
@@ -380,7 +387,14 @@ func TestImportResolverFallsBackForImportCycles(t *testing.T) {
 			assert.NotNil(t, pkg.Scope().Lookup("Value"))
 		}
 	}
-	assert.True(t, resolver.failed[resolver.contexts[filepath.Join(dir, "a")]])
+	key := resolver.contexts[filepath.Join(dir, "a")]
+	assert.False(t, resolver.failed[key])
+	assert.Same(t, resolver.loaded[key], resolver.resolve(filepath.Join(dir, "c"), nil))
+	for _, name := range []string{"a", "b"} {
+		local := resolver.resolve(filepath.Join(dir, name), nil)
+		assert.NotSame(t, resolver.loaded[key], local)
+		assert.Same(t, local, resolver.resolve(filepath.Join(dir, name), nil))
+	}
 }
 
 func TestImportResolverRelativeGoenv(t *testing.T) {
@@ -439,6 +453,110 @@ func TestImportResolverSharesDespiteInactivePlatformImports(t *testing.T) {
 	_, err = a.Import("example.test/disabled")
 	require.Error(t, err)
 	assert.False(t, r.failed[r.contexts[filepath.Join(dir, "a")]])
+	inactive := r.resolve(filepath.Join(dir, "inactive"), nil)
+	assert.Same(t, a, inactive)
+	assert.Same(t, inactive, r.resolve(filepath.Join(dir, "inactive"), nil))
+}
+
+func TestImportResolverSharesDespiteUnrelatedTypeErrors(t *testing.T) {
+	isolateImportEnvironment(t)
+	dir := t.TempDir()
+	files := importFixture(t, dir, map[string]string{
+		"go.mod":           "module example.test\ngo 1.26\n",
+		"a/a.go":           "package a\nimport \"net/url\"\nvar _ url.URL\n",
+		"b/b.go":           "package b\nimport \"net/http\"\nvar _ http.Request\n",
+		"bad/bad.go":       "package bad\nimport _ \"example.test/broken\"\n",
+		"bad/healthy.go":   "package bad\nimport \"net/url\"\nvar _ url.URL\n",
+		"broken/broken.go": "package broken\nfunc Broken() { _ = undefined }\n",
+	})
+	for _, order := range [][]string{{"bad", "a", "b"}, {"b", "a", "bad"}} {
+		r := newImportResolver(files)
+		resolved := make(map[string]types.Importer)
+		for _, name := range order {
+			resolved[name] = r.resolve(filepath.Join(dir, name), nil)
+		}
+		require.Same(t, resolved["a"], resolved["b"])
+		require.NotSame(t, resolved["a"], resolved["bad"])
+		assert.Same(t, resolved["bad"], r.resolve(filepath.Join(dir, "bad"), nil))
+		url, err := resolved["a"].Import("net/url")
+		require.NoError(t, err)
+		http, err := resolved["b"].Import("net/http")
+		require.NoError(t, err)
+		assert.Contains(t, http.Imports(), url)
+		localURL, err := resolved["bad"].Import("net/url")
+		require.NoError(t, err)
+		assert.NotSame(t, url, localURL)
+		_, err = resolved["bad"].Import("example.test/broken")
+		require.Error(t, err)
+		assert.False(t, r.failed[r.contexts[filepath.Join(dir, "a")]])
+	}
+}
+
+func TestImportResolverFallsBackForPartialDependencies(t *testing.T) {
+	isolateImportEnvironment(t)
+	dir := t.TempDir()
+	importFixture(t, dir, map[string]string{
+		"go.mod":       "module example.test\ngo 1.26\n",
+		"leaf/leaf.go": "package leaf\nimport \"net/url\"\ntype Value struct { URL url.URL }\nvar _ = undefined\n",
+		"mid/mid.go":   "package mid\nimport \"example.test/leaf\"\ntype Value = leaf.Value\n",
+		"top/top.go":   "package top\nimport \"example.test/mid\"\ntype Value = mid.Value\n",
+	})
+	// Only inspect consumers, so leaf and mid remain transitive dependencies.
+	files := importFixture(t, dir, map[string]string{
+		"a/a.go":     "package a\nimport \"net/url\"\nvar _ url.URL\n",
+		"b/b.go":     "package b\nimport \"net/http\"\nvar _ http.Request\n",
+		"bad/bad.go": "package bad\nimport (\"example.test/top\"; \"net/url\"; \"net/http\")\nvar _ url.URL = top.Value{}.URL\nvar _ http.Request\n",
+	})
+	loaded, err := packages.Load(&packages.Config{
+		Dir: dir, Mode: packages.NeedName | packages.NeedImports | packages.NeedTypes,
+	}, "example.test/top")
+	require.NoError(t, err)
+	require.Len(t, loaded, 1)
+	require.Empty(t, loaded[0].Errors)
+	require.True(t, loaded[0].Types.Complete())
+	require.True(t, loaded[0].IllTyped)
+
+	r := newImportResolver(files)
+	a := r.resolve(filepath.Join(dir, "a"), nil)
+	b := r.resolve(filepath.Join(dir, "b"), nil)
+	bad := r.resolve(filepath.Join(dir, "bad"), nil)
+	require.Same(t, a, b)
+	require.NotSame(t, a, bad)
+	assert.Same(t, bad, r.resolve(filepath.Join(dir, "bad"), nil))
+	assert.False(t, r.failed[r.contexts[filepath.Join(dir, "a")]])
+
+	sharedURL, err := a.Import("net/url")
+	require.NoError(t, err)
+	localURL, err := bad.Import("net/url")
+	require.NoError(t, err)
+	assert.NotSame(t, sharedURL, localURL)
+	localHTTP, err := bad.Import("net/http")
+	require.NoError(t, err)
+	assert.Contains(t, localHTTP.Imports(), localURL)
+	top, err := bad.Import("example.test/top")
+	require.NoError(t, err, "local resolution must retain usable partial types")
+	value := top.Scope().Lookup("Value").Type().Underlying().(*types.Struct)
+	assert.True(t, types.Identical(value.Field(0).Type(), localURL.Scope().Lookup("URL").Type()))
+	assert.False(t, types.Identical(value.Field(0).Type(), sharedURL.Scope().Lookup("URL").Type()))
+}
+
+func TestImportResolverCachesMissingImports(t *testing.T) {
+	isolateImportEnvironment(t)
+	dir := t.TempDir()
+	files := importFixture(t, dir, map[string]string{
+		"go.mod":         "module example.test\ngo 1.26\n",
+		"empty/empty.go": "package empty\n",
+		"bad/bad.go":     "package bad\nimport _ \"example.test/missing\"\n",
+	})
+	r := newImportResolver(files)
+	bad := r.resolve(filepath.Join(dir, "bad"), nil)
+	assert.Same(t, bad, r.resolve(filepath.Join(dir, "bad"), nil))
+	_, err := bad.Import("example.test/missing")
+	require.Error(t, err)
+	key := r.contexts[filepath.Join(dir, "bad")]
+	assert.NotSame(t, r.loaded[key], bad)
+	assert.False(t, r.failed[key])
+	assert.Same(t, r.loaded[key], r.resolve(filepath.Join(dir, "empty"), nil))
 }
 
 func TestBuildExcludedPackageRequiresNoFiles(t *testing.T) {
