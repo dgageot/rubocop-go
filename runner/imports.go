@@ -51,7 +51,7 @@ func loadImports(dir string, patterns []string) (*resolvedImporter, bool) {
 
 	loaded, err := packages.Load(&packages.Config{
 		Dir:  dir,
-		Mode: packages.NeedName | packages.NeedImports | packages.NeedTypes,
+		Mode: packages.NeedName | packages.NeedFiles | packages.NeedImports | packages.NeedTypes,
 	}, patterns...)
 	if err != nil {
 		return resolved, false
@@ -72,9 +72,24 @@ func loadImports(dir string, patterns []string) (*resolvedImporter, bool) {
 			// requires the entire reachable graph to be healthy.
 			resolved.packages[pkg.PkgPath] = pkg.Types
 			resolved.healthy[pkg.PkgPath] = !unhealthy[pkg]
+		} else if buildExcludedPackage(pkg) {
+			resolved.healthy[pkg.PkgPath] = true
 		}
 	}
 	return resolved, true
+}
+
+// Inactive platform imports cannot contribute types to any package in this build.
+func buildExcludedPackage(pkg *packages.Package) bool {
+	if len(pkg.GoFiles) != 0 || len(pkg.Errors) == 0 {
+		return false
+	}
+	for _, err := range pkg.Errors {
+		if !strings.HasPrefix(err.Msg, "build constraints exclude all Go files in ") {
+			return false
+		}
+	}
+	return true
 }
 
 type resolvedImporter struct {

@@ -454,7 +454,7 @@ func TestImportResolverSharesDespiteInactivePlatformImports(t *testing.T) {
 	require.Error(t, err)
 	assert.False(t, r.failed[r.contexts[filepath.Join(dir, "a")]])
 	inactive := r.resolve(filepath.Join(dir, "inactive"), nil)
-	assert.NotSame(t, a, inactive)
+	assert.Same(t, a, inactive)
 	assert.Same(t, inactive, r.resolve(filepath.Join(dir, "inactive"), nil))
 }
 
@@ -557,4 +557,10 @@ func TestImportResolverCachesMissingImports(t *testing.T) {
 	assert.NotSame(t, r.loaded[key], bad)
 	assert.False(t, r.failed[key])
 	assert.Same(t, r.loaded[key], r.resolve(filepath.Join(dir, "empty"), nil))
+}
+
+func TestBuildExcludedPackageRequiresNoFiles(t *testing.T) {
+	loadError := packages.Error{Msg: "build constraints exclude all Go files in /example"}
+	assert.True(t, buildExcludedPackage(&packages.Package{Errors: []packages.Error{loadError}}))
+	assert.False(t, buildExcludedPackage(&packages.Package{GoFiles: []string{"example.go"}, Errors: []packages.Error{loadError}}))
 }
