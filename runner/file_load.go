@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sync"
 
 	"golang.org/x/tools/go/packages"
@@ -88,6 +89,9 @@ func (l *sharedFileLoader) typedFiles(filename string, c cop.Cop) ([]*cop.Pass, 
 	if err := batch.errors[dir]; err != nil {
 		return nil, err
 	}
+	if err := batch.errors[name]; err != nil {
+		return nil, err
+	}
 	var views []*cop.Pass
 	for _, view := range batch.files[name] {
 		views = append(views, &cop.Pass{
@@ -124,11 +128,19 @@ func (l *sharedFileLoader) loadBatch(dirs []string) *typedFileBatch {
 			}
 			continue
 		}
+		var filenames []string
 		for _, file := range pkg.Syntax {
 			name := filepath.Clean(pkg.Fset.PositionFor(file.Pos(), false).Filename)
+			filenames = append(filenames, name)
 			batch.files[name] = append(batch.files[name], &cop.Pass{
 				FileSet: pkg.Fset, File: file, Info: pkg.TypesInfo, Package: pkg.Types,
 			})
+		}
+		// Cgo can replace active sources with generated syntax at another path.
+		for _, name := range pkg.GoFiles {
+			if !slices.Contains(filenames, filepath.Clean(name)) {
+				batch.errors[filepath.Clean(name)] = fmt.Errorf("typed file views unavailable for rewritten source %s", name)
+			}
 		}
 	}
 	return batch

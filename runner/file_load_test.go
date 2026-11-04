@@ -4,6 +4,7 @@ import (
 	"errors"
 	"go/ast"
 	"go/types"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -257,4 +258,30 @@ func TestSharedFileLoaderConcurrentRequests(t *testing.T) {
 	}
 	wg.Wait()
 	assert.Equal(t, 1, loads)
+}
+
+func TestSharedFileLoaderRewrittenActiveSource(t *testing.T) {
+	isolateImportEnvironment(t)
+	t.Setenv("CGO_ENABLED", "1")
+	if _, err := exec.LookPath("cc"); err != nil {
+		t.Skip("C compiler unavailable")
+	}
+	dir := t.TempDir()
+	files := importFixture(t, dir, map[string]string{
+		"go.mod": "module example.test\ngo 1.26\n",
+		"native.go": `package native
+/* int value(void) { return 42; } */
+import "C"
+func Value() int { return int(C.value()) }
+`,
+		"plain.go": "package native\nvar Plain int\n",
+	})
+	l := newSharedFileLoader(files)
+	views, err := l.typedFiles(filepath.Join(dir, "native.go"), nil)
+	require.ErrorContains(t, err, "rewritten source")
+	assert.Nil(t, views)
+	views, err = l.typedFiles(filepath.Join(dir, "plain.go"), nil)
+	require.NoError(t, err)
+	require.Len(t, views, 1)
+	assert.NotNil(t, views[0].Package.Scope().Lookup("Value"))
 }
