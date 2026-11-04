@@ -30,6 +30,7 @@
 package cop
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/token"
@@ -102,7 +103,29 @@ type Pass struct {
 	// .rubocop-go.yml.
 	SeverityOverride *Severity
 
-	offenses []Offense
+	offenses   []Offense
+	typedFiles func() ([]*Pass, error)
+}
+
+// TypedFiles returns the active package variants of this file in load order.
+// Each view has matched FileSet, File, Info and Package fields from a separate
+// AST. Treat these views and their shared type graph as read-only; positions and
+// nodes must not be mixed with those of the receiving pass. Report diagnostics
+// through the receiving pass, using ReportOffense to preserve view positions.
+// An empty result means the file is inactive in the current build. An error
+// means views are unavailable and callers may use their own local loader.
+func (p *Pass) TypedFiles() ([]*Pass, error) {
+	if p.typedFiles == nil {
+		return nil, errors.New("typed file views unavailable")
+	}
+	return p.typedFiles()
+}
+
+// SetTypedFiles lets custom runners provide lazy views for TypedFiles. Set it
+// before publishing the pass; nil removes the provider. Providers must follow
+// the TypedFiles contract and support concurrent calls if their cops make them.
+func (p *Pass) SetTypedFiles(provider func() ([]*Pass, error)) {
+	p.typedFiles = provider
 }
 
 // Report records an offense covering the source span of the AST node n.
