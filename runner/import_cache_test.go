@@ -240,7 +240,7 @@ func wrap(err error) error { return fmt.Errorf("%w", err) }
 			require.NoError(t, err)
 			parsed := []*ast.File{file}
 			info, pkg := typeCheckWithImporter(fset, filepath.Dir(path), parsed, resolver.resolve(filepath.Dir(path), parsed))
-			offenses = append(offenses, r.runCops(fset, file, info, pkg)...)
+			offenses = append(offenses, r.runCops(fset, file, info, pkg, nil)...)
 		}
 		return offenses
 	}
