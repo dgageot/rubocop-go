@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -38,46 +39,47 @@ func importPaths(files []*ast.File) []string {
 	return patterns
 }
 
-func loadImports(dir string, patterns []string) (types.Importer, bool) {
-	fallback := importer.Default()
+// The boolean reports loader-wide success, not whether every package is healthy.
+func loadImports(dir string, patterns []string) (*resolvedImporter, bool) {
+	resolved := &resolvedImporter{
+		packages: make(map[string]*types.Package), healthy: make(map[string]bool),
+		fallback: importer.Default(),
+	}
 	if len(patterns) == 0 {
-		return fallback, true
+		return resolved, true
 	}
 
 	loaded, err := packages.Load(&packages.Config{
 		Dir:  dir,
-		Mode: packages.NeedName | packages.NeedFiles | packages.NeedTypes,
+		Mode: packages.NeedName | packages.NeedImports | packages.NeedTypes,
 	}, patterns...)
 	if err != nil {
-		return fallback, false
+		return resolved, false
 	}
-	resolved := make(map[string]*types.Package)
-	complete := true
+	// NeedImports retains dependency errors without requiring full dependency
+	// types. Those types may legitimately be incomplete when read from exports.
+	unhealthy := make(map[*packages.Package]bool)
+	packages.Visit(loaded, nil, func(pkg *packages.Package) {
+		bad := len(pkg.Errors) != 0 || pkg.IllTyped
+		for _, dep := range pkg.Imports {
+			bad = bad || unhealthy[dep]
+		}
+		unhealthy[pkg] = bad
+	})
 	for _, pkg := range loaded {
 		if len(pkg.Errors) == 0 && pkg.Types != nil && pkg.Types.Complete() {
-			resolved[pkg.PkgPath] = pkg.Types
-		} else if !buildExcludedPackage(pkg) {
-			complete = false
+			// Local resolution can still use partial types, as before. Sharing
+			// requires the entire reachable graph to be healthy.
+			resolved.packages[pkg.PkgPath] = pkg.Types
+			resolved.healthy[pkg.PkgPath] = !unhealthy[pkg]
 		}
 	}
-	return &resolvedImporter{packages: resolved, fallback: fallback}, complete
-}
-
-// Inactive platform imports cannot contribute types to any package in this build.
-func buildExcludedPackage(pkg *packages.Package) bool {
-	if len(pkg.GoFiles) != 0 || len(pkg.Errors) == 0 {
-		return false
-	}
-	for _, err := range pkg.Errors {
-		if !strings.HasPrefix(err.Msg, "build constraints exclude all Go files in ") {
-			return false
-		}
-	}
-	return true
+	return resolved, true
 }
 
 type resolvedImporter struct {
 	packages map[string]*types.Package
+	healthy  map[string]bool
 	fallback types.Importer
 }
 
@@ -93,14 +95,17 @@ func (i *resolvedImporter) Import(path string) (*types.Package, error) {
 type importResolver struct {
 	files    map[string][]string
 	contexts map[string]string
-	loaded   map[string]types.Importer
+	loaded   map[string]*resolvedImporter
 	failed   map[string]bool
+	paths    map[string][]string
+	local    map[string]types.Importer
 }
 
 func newImportResolver(files []string) *importResolver {
 	r := &importResolver{
 		files: make(map[string][]string), contexts: make(map[string]string),
-		loaded: make(map[string]types.Importer), failed: make(map[string]bool),
+		loaded: make(map[string]*resolvedImporter), failed: make(map[string]bool),
+		paths: make(map[string][]string), local: make(map[string]types.Importer),
 	}
 	if !canShareImports() {
 		return r
@@ -195,26 +200,47 @@ func importContext(dir string) string {
 
 func (r *importResolver) resolve(dir string, files []*ast.File) types.Importer {
 	key := r.contexts[dir]
-	if key == "" || r.failed[key] {
+	if key == "" {
 		return resolveImports(dir, files)
 	}
-	if loaded := r.loaded[key]; loaded != nil {
-		return loaded
+	if local := r.local[dir]; local != nil {
+		return local
 	}
+	if r.loaded[key] == nil && !r.failed[key] {
+		r.load(dir, key, files)
+	}
+	paths := slices.Concat(r.paths[dir], importPaths(files))
+	if loaded := r.loaded[key]; loaded != nil {
+		if !slices.ContainsFunc(paths, func(path string) bool { return !loaded.healthy[path] }) {
+			return loaded
+		}
+	}
+	// Fall back for the whole directory: mixing individual imports from separate
+	// loads would break type identity. Cache unsuccessful local loads too.
+	local, _ := loadImports(dir, paths)
+	r.local[dir] = local
+	return local
+}
+
+func (r *importResolver) load(dir, key string, files []*ast.File) {
+	byDir := make(map[string][]*ast.File)
 	var parsed []*ast.File
 	fset := token.NewFileSet()
 	for _, path := range r.files[key] {
 		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 		if err == nil {
+			parent := filepath.Dir(path)
+			byDir[parent] = append(byDir[parent], file)
 			parsed = append(parsed, file)
 		}
 	}
-	patterns := importPaths(append(parsed, files...))
-	loaded, ok := loadImports(dir, patterns)
+	for parent, files := range byDir {
+		r.paths[parent] = importPaths(files)
+	}
+	loaded, ok := loadImports(dir, importPaths(append(parsed, files...)))
 	if !ok {
 		r.failed[key] = true
-		return resolveImports(dir, files)
+		return
 	}
 	r.loaded[key] = loaded
-	return loaded
 }
