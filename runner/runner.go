@@ -40,7 +40,6 @@ type Runner struct {
 	// needsTypes is true when at least one cop requests type information.
 	needsTypes        bool
 	sharedProgramLoad bool
-	sharedFileLoad    bool
 }
 
 // New creates a Runner with the given cops filtered by config. The default
@@ -85,12 +84,6 @@ func (r *Runner) WithProgramCops(cops []prog.Cop) *Runner {
 // File cops retain their existing directory-based type checking.
 func (r *Runner) WithSharedProgramLoad() *Runner { r.sharedProgramLoad = true; return r }
 
-// WithSharedFileLoad opts into lazy, shared typed views via cop.Pass.TypedFiles.
-// It assumes source files and the build environment stay stable during the file
-// phase. Views are cached only for one Run and are independent of program loads.
-// Existing file passes, file coverage and directory-based type checking are unchanged.
-func (r *Runner) WithSharedFileLoad() *Runner { r.sharedFileLoad = true; return r }
-
 // Run inspects all Go files in the given paths and returns the total offense count.
 func (r *Runner) Run(paths []string) (int, error) {
 	files, err := collectGoFiles(paths)
@@ -103,10 +96,7 @@ func (r *Runner) Run(paths []string) (int, error) {
 	var allOffenses []cop.Offense
 	filesInspected := 0
 	fset := token.NewFileSet()
-	var sharedFiles *sharedFileLoader
-	if r.sharedFileLoad {
-		sharedFiles = newSharedFileLoader(files)
-	}
+	sharedFiles := newSharedFileLoader(files)
 
 	if r.needsTypes {
 		// Group files by directory and type-check per package so type-aware

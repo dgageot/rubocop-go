@@ -18,44 +18,36 @@ import (
 	"github.com/dgageot/rubocop-go/prog"
 )
 
-func TestSharedFileLoadIsOptIn(t *testing.T) {
+func TestSharedFileLoadAvailableByDefault(t *testing.T) {
 	isolateImportEnvironment(t)
 	dir := t.TempDir()
 	importFixture(t, dir, map[string]string{
 		"go.mod": "module example.test\ngo 1.26\n",
 		"p.go":   "package p\nvar Value int\n",
 	})
-	for _, withTypes := range []bool{false, true} {
-		for _, shared := range []bool{false, true} {
-			calls := 0
-			c := cop.New(cop.Meta{Name: "Test/Views"}, func(p *cop.Pass) {
-				calls++
-				assert.Equal(t, withTypes, p.Info != nil)
-				assert.Equal(t, withTypes, p.Package != nil)
-				views, err := p.TypedFiles()
-				if !shared {
-					require.EqualError(t, err, "typed file views unavailable")
-					assert.Nil(t, views)
-					return
-				}
-				require.NoError(t, err)
-				require.Len(t, views, 1)
-				assert.Same(t, p.Cop, views[0].Cop)
-				assert.NotSame(t, p.File, views[0].File)
-				assert.NotSame(t, p.FileSet, views[0].FileSet)
-				assert.NotNil(t, views[0].Info)
-				assert.NotNil(t, views[0].Package.Scope().Lookup("Value"))
-			})
-			c.Types = withTypes
-			r := New([]cop.Cop{c}, config.DefaultConfig(), io.Discard)
-			if shared {
-				assert.Same(t, r, r.WithSharedFileLoad())
-			}
-			_, err := r.Run([]string{dir})
+	check := func(t *testing.T, withTypes bool) {
+		t.Helper()
+		calls := 0
+		c := cop.New(cop.Meta{Name: "Test/Views"}, func(p *cop.Pass) {
+			calls++
+			assert.Equal(t, withTypes, p.Info != nil)
+			assert.Equal(t, withTypes, p.Package != nil)
+			views, err := p.TypedFiles()
 			require.NoError(t, err)
-			assert.Equal(t, 1, calls)
-		}
+			require.Len(t, views, 1)
+			assert.Same(t, p.Cop, views[0].Cop)
+			assert.NotSame(t, p.File, views[0].File)
+			assert.NotSame(t, p.FileSet, views[0].FileSet)
+			assert.NotNil(t, views[0].Info)
+			assert.NotNil(t, views[0].Package.Scope().Lookup("Value"))
+		})
+		c.Types = withTypes
+		_, err := New([]cop.Cop{c}, config.DefaultConfig(), io.Discard).Run([]string{dir})
+		require.NoError(t, err)
+		assert.Equal(t, 1, calls)
 	}
+	t.Run("syntax-only", func(t *testing.T) { check(t, false) })
+	t.Run("type-aware", func(t *testing.T) { check(t, true) })
 }
 
 func TestSharedFileLoadStaysLazy(t *testing.T) {
@@ -125,7 +117,7 @@ func TestSharedFileLoadIncludesUncollectedSiblings(t *testing.T) {
 		assert.Nil(t, views[0].Package.Scope().Lookup("TestValue"))
 		assert.NotNil(t, views[1].Package.Scope().Lookup("TestValue"))
 	})
-	r := New([]cop.Cop{c}, config.DefaultConfig(), io.Discard).WithSharedFileLoad()
+	r := New([]cop.Cop{c}, config.DefaultConfig(), io.Discard)
 	_, err := r.Run([]string{"p.go"})
 	require.NoError(t, err)
 	assert.Equal(t, 1, calls, "loading siblings must not expand file coverage")
@@ -147,7 +139,7 @@ func TestSharedFileLoadRefreshesEachRun(t *testing.T) {
 		require.Len(t, views, 1)
 		snapshots = append(snapshots, views[0])
 	})
-	r := New([]cop.Cop{c}, config.DefaultConfig(), io.Discard).WithSharedFileLoad()
+	r := New([]cop.Cop{c}, config.DefaultConfig(), io.Discard)
 	_, err := r.Run([]string{filepath.Join(dir, "p.go")})
 	require.NoError(t, err)
 	importFixture(t, dir, map[string]string{"p.go": "package p\nvar Second int\n"})
@@ -185,6 +177,9 @@ func TestSharedFileLoadPreservesReportingAndFallback(t *testing.T) {
 		})
 		local := WithDirectoryTypes(report)
 		wrapper := cop.New(cop.Meta{Name: "Test/Report"}, func(p *cop.Pass) {
+			if !shared {
+				p.SetTypedFiles(nil)
+			}
 			views, err := p.TypedFiles()
 			if err != nil {
 				fallbacks++
@@ -202,9 +197,6 @@ func TestSharedFileLoadPreservesReportingAndFallback(t *testing.T) {
 		cfg.Cops["Test/Report"] = config.CopConfig{Severity: "error"}
 		r := New([]cop.Cop{wrapper}, cfg, io.Discard)
 		r.Reporter = NewJSONReporter(&out)
-		if shared {
-			r.WithSharedFileLoad()
-		}
 		count, err := r.Run([]string{dir})
 		require.NoError(t, err)
 		if shared {
@@ -238,25 +230,20 @@ func TestSharedFileLoadDoesNotChangeExistingCops(t *testing.T) {
 		"broken/p.go":     "package broken\nfunc bad(\n",
 		"scoped/p.go":     "package scoped\n",
 	})
-	for _, withTypes := range []bool{false, true} {
-		run := func(shared bool) string {
-			c := cop.New(cop.Meta{Name: "Test/Report"}, func(p *cop.Pass) {
-				p.Report(p.File, "found")
-			}, cop.WithScope(func(p *cop.Pass) bool { return p.PackageName() != "scoped" }))
-			c.Types = withTypes
-			var out bytes.Buffer
-			r := New([]cop.Cop{c}, config.DefaultConfig(), io.Discard)
-			r.Reporter = NewJSONReporter(&out)
-			if shared {
-				r.WithSharedFileLoad()
-			}
-			count, err := r.Run([]string{dir})
-			require.NoError(t, err)
-			assert.Equal(t, 4, count)
-			return out.String()
-		}
-		assert.JSONEq(t, run(false), run(true))
+	run := func(withTypes bool) string {
+		c := cop.New(cop.Meta{Name: "Test/Report"}, func(p *cop.Pass) {
+			p.Report(p.File, "found")
+		}, cop.WithScope(func(p *cop.Pass) bool { return p.PackageName() != "scoped" }))
+		c.Types = withTypes
+		var out bytes.Buffer
+		r := New([]cop.Cop{c}, config.DefaultConfig(), io.Discard)
+		r.Reporter = NewJSONReporter(&out)
+		count, err := r.Run([]string{dir})
+		require.NoError(t, err)
+		assert.Equal(t, 4, count)
+		return out.String()
 	}
+	assert.JSONEq(t, run(false), run(true))
 }
 
 func TestSharedFileAndProgramLoadsAreIndependent(t *testing.T) {
@@ -284,7 +271,7 @@ func TestSharedFileAndProgramLoadsAreIndependent(t *testing.T) {
 		assert.NotSame(t, fileSnapshot.FileSet, p.FileSet)
 	}))
 	r := New([]cop.Cop{fileCop}, config.DefaultConfig(), io.Discard).
-		WithSharedFileLoad().WithProgramCops([]prog.Cop{programCop}).WithSharedProgramLoad()
+		WithProgramCops([]prog.Cop{programCop}).WithSharedProgramLoad()
 	r.Reporter = &fileFinishedReporter{Reporter: baseReporter, finished: func() {
 		importFixture(t, dir, map[string]string{"p.go": "package p\nvar Added int\n"})
 	}}
