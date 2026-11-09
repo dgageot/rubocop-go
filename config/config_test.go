@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -98,6 +99,10 @@ func TestLoad_InvalidValues(t *testing.T) {
 		"default_cops: [true]\n",
 		"cops:\n  Lint/OsExit:\n    enabled: sometimes\n",
 		"cops:\n  - Lint/OsExit\n",
+		"cops:\n  Lint/OsExit:\n    exclude: gen/\n",
+		"cops:\n  Lint/OsExit:\n    exclude: true\n",
+		"cops:\n  Lint/OsExit:\n    exclude: {gen: true}\n",
+		"cops:\n  Custom/Rule:\n    exclude: [[gen/]]\n",
 	} {
 		t.Run(content, func(t *testing.T) {
 			cfg, err := config.Load(writeConfig(t, content))
@@ -158,4 +163,57 @@ cops:
 	assert.Equal(t, cop.Error, sev)
 
 	assert.True(t, (&config.Config{}).IsEnabled("Custom/Unconfigured"), "zero-value config must enable every cop")
+}
+
+// TestCopConfig_Compatibility uses CopConfig from outside the package as code
+// written for earlier versions can.
+func TestCopConfig_Compatibility(t *testing.T) {
+	on := new(true)
+	positional := config.CopConfig{on, "error"}
+	keyed := config.CopConfig{Enabled: on, Severity: "error"}
+	if positional != keyed {
+		t.Errorf("positional literal %+v differs from keyed literal %+v", positional, keyed)
+	}
+	assert.Equal(t, 1, map[config.CopConfig]int{positional: 1}[keyed], "CopConfig values must stay usable as map keys")
+
+	typ := reflect.TypeFor[config.CopConfig]()
+	require.Equal(t, 2, typ.NumField())
+	for i, want := range []struct{ name, tag string }{
+		{"Enabled", `yaml:"enabled"`},
+		{"Severity", `yaml:"severity,omitempty"`},
+	} {
+		assert.Equal(t, want.name, typ.Field(i).Name)
+		assert.Equal(t, want.tag, string(typ.Field(i).Tag))
+	}
+}
+
+// TestLoad_ExcludeKeepsDecodedFields checks that an exclude list changes no
+// exported field, and that null and empty values decode as before.
+func TestLoad_ExcludeKeepsDecodedFields(t *testing.T) {
+	off := new(false)
+	for _, tc := range []struct {
+		name, content string
+		defaultCops   *bool
+		cops          map[string]config.CopConfig
+	}{
+		{"empty document", "", nil, map[string]config.CopConfig{}},
+		{"null document", "~\n", nil, map[string]config.CopConfig{}},
+		{"null cops", "cops:\n", nil, nil},
+		{"empty cops", "cops: {}\n", nil, map[string]config.CopConfig{}},
+		{"null entry", "cops:\n  X:\n", nil, map[string]config.CopConfig{"X": {}}},
+		{"exclusion-only entry", "cops:\n  X:\n    exclude: [gen/]\n", nil, map[string]config.CopConfig{"X": {}}},
+		{
+			"every key",
+			"default_cops: false\ncops:\n  X:\n    enabled: false\n    severity: error\n    exclude: [gen/]\n  Y:\n    exclude: []\n",
+			off,
+			map[string]config.CopConfig{"X": {Enabled: off, Severity: "error"}, "Y": {}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := config.Load(writeConfig(t, tc.content))
+			require.NoError(t, err)
+			assert.Equal(t, tc.defaultCops, cfg.DefaultCops)
+			assert.Equal(t, tc.cops, cfg.Cops)
+		})
+	}
 }

@@ -75,6 +75,8 @@ keys:
 - `enabled`: `true` runs the cop, and `false` disables it.
 - `severity`: `convention`, `warning`, or `error` replaces the reported
   severity. The CLI ignores other values.
+- `exclude`: a list of path patterns. The cop does not report offenses in the
+  files that match. See [excluding paths](#excluding-paths).
 
 ```yaml
 cops:
@@ -141,9 +143,86 @@ The CLI exits with status 1 for invalid YAML or a value of the wrong type,
 also in an entry with an unknown name. As before, it exits with status 1 when
 the analysis finds offenses.
 
-The configuration selects complete cops. It cannot restrict a cop to some paths
-or pass constructor options such as `cop.WithScope`. Use `//rubocop:disable`
-comments, or build an embedded runner with named constructors.
+The configuration cannot pass constructor options such as `cop.WithScope`. Use
+[path exclusions](#excluding-paths), `//rubocop:disable` comments, or an
+embedded runner with named constructors.
+
+### Excluding paths
+
+Add an `exclude` list to a cop entry to stop that cop in some files. The list
+applies only to the named cop. Other cops still inspect and report those files.
+
+```yaml
+cops:
+  Lint/OsExit:
+    exclude:
+      - cmd/             # Every file below cmd
+      - "**/*_test.go"   # Test files at any depth
+  Lint/WrapErrors:
+    enabled: true
+    exclude:
+      - internal/legacy/errors.go
+```
+
+An `exclude` list does not enable a cop. In this example, `Lint/OsExit` runs
+because it is a default cop. `Lint/WrapErrors` runs because of `enabled: true`.
+
+Patterns are relative to the directory that contains `.rubocop-go.yml`. For the
+CLI, this is the current directory. Patterns use `/` as the separator on every
+platform. In YAML, quote a pattern that starts with `*` or `[`.
+
+| Pattern | Matches |
+| --- | --- |
+| `main.go` | The file `main.go` beside the configuration file |
+| `cmd` or `cmd/` | Every file below the `cmd` directory |
+| `*.go` | Each `.go` file beside the configuration file, and every file below a directory there with a `.go` name, such as `pkg.go/child.go`. Not `pkg/a.go` |
+| `**/*_test.go` | Test files at any depth, also beside the configuration file |
+| `internal/*/gen/` | Every file below `gen` in each direct subdirectory of `internal` |
+| `pkg/**/zz_generated.go` | Each `zz_generated.go` file in `pkg` or below it |
+
+The pattern rules are:
+
+- Each component matches one path element. `*`, `?`, and character classes
+  such as `[a-z]` follow Go's [`path.Match`](https://pkg.go.dev/path#Match).
+- A `**` component matches zero or more path elements. `**` must be a complete
+  component.
+- A pattern that matches a directory also matches every file below it. This
+  rule also applies to wildcards. For example, `*.go` matches the directory
+  `pkg.go`, so it also matches `pkg.go/child.go`. A trailing `/` makes the
+  pattern match only directories.
+- Patterns are anchored at the configuration directory. `*.go` matches `a.go`,
+  but not `pkg/a.go`.
+- Matching is case-sensitive and lexical. It does not read the file system or
+  resolve symbolic links. Files outside the configuration directory never
+  match.
+
+The CLI checks every pattern before it inspects files. It exits with status 1
+for an invalid pattern, also in an entry with an unknown name or with
+`enabled: false`. These patterns are invalid: an empty pattern, an absolute
+path, a `..` component, a backslash, `**` in a longer component such as
+`**.go`, `.` alone, and invalid `path.Match` syntax. Brace expansion, negation,
+and regular expressions are not available.
+
+The runner applies exclusions as follows:
+
+- A file cop does not check a file that its patterns match.
+- The runner still parses, loads, and type-checks the excluded files. Other
+  files keep the type information and cross-file facts that come from them.
+- Whole-program cops still analyze the complete program. The runner removes
+  each offense that a cop reports in a file that its patterns match. This
+  also applies when a file cop reports an offense in a file other than the
+  checked file.
+- The runner keeps offenses that have no filename.
+- A `//line` directive changes the filename of the offenses after it. The
+  patterns match that reported filename, as `//rubocop:disable` comments do.
+- Severities, `//rubocop:disable` comments, and exit statuses work as before.
+  The progress output, the offense list, and the offense count contain only
+  the reported offenses.
+
+Path exclusions do not select files by package name. For example, they cannot
+exempt all `package main` files. Earlier versions ignored an `exclude` key. A
+configuration file that contains one now applies its patterns, and an invalid
+pattern stops the CLI.
 
 ## Writing a custom cop
 
@@ -224,6 +303,25 @@ r := runner.New(files, cfg, os.Stdout).WithProgramCops(programs)
 
 Catalog constructors take no options. Call a named constructor to add options
 such as `cop.WithScope`.
+
+`Runner.Run` applies the `exclude` lists that `config.Load` read, also for
+custom cop names. The patterns are relative to the directory of the loaded
+file. `config.Load` returns an error for an invalid pattern. `Run` resolves
+relative filenames from the working directory when it starts.
+`Config.Exclusions` and `Exclusions.Excludes` provide the same matching to
+custom runners.
+
+Only `config.Load` reads `exclude` lists. `Config` keeps them in an unexported
+field, and `CopConfig` has no `Exclude` field. A configuration that you create
+in Go, such as `config.DefaultConfig()` or a `config.Config` literal, has no
+exclusions. A YAML decoder that fills a `config.Config` directly ignores
+`exclude`, and a YAML encoder does not write it. To apply exclusions in an
+embedded runner, read the file with `config.Load`. A copy of a loaded `Config`
+keeps its exclusions. Changes to its `Cops` map do not add or remove them.
+
+`Config` now has unexported fields, so positional `Config` literals no longer
+compile. Use field names in `Config` literals. `CopConfig` keeps its two
+fields. Its positional literals, `==` comparisons, and map keys work as before.
 
 ### Selecting execution modes
 
@@ -407,7 +505,7 @@ r := runner.New(cops.All(), cfg, os.Stdout).
 Whole-program analysis is best-effort: if the program cannot be loaded
 (e.g. outside a module) the runner prints a notice and skips the
 program cops rather than failing. Offenses flow through the same
-reporting, severity-override, and `//rubocop:disable` suppression
+reporting, severity-override, `exclude`, and `//rubocop:disable` suppression
 machinery as file cops.
 
 `coptest.RunProgram` writes a multi-file program to a temp module, loads
