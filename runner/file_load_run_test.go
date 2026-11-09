@@ -73,7 +73,7 @@ func TestSharedFileLoadStaysLazy(t *testing.T) {
 		cop.New(cop.Meta{Name: "Test/Syntax"}, func(*cop.Pass) {}),
 	}
 	r := New(cops, config.DefaultConfig(), io.Discard)
-	assert.Empty(t, r.runCops(fset, file, nil, nil, l))
+	assert.Empty(t, r.runCops(fset, file, nil, nil, l, nil))
 	assert.Nil(t, l.contexts, "even environment checks and grouping must stay lazy")
 	assert.Zero(t, loads)
 
@@ -88,7 +88,7 @@ func TestSharedFileLoadStaysLazy(t *testing.T) {
 		return len(views) == 1
 	}))
 	r.Cops = []cop.Cop{probe, probe}
-	r.runCops(fset, file, nil, nil, l)
+	r.runCops(fset, file, nil, nil, l, nil)
 	assert.Equal(t, 1, loads)
 }
 

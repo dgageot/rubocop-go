@@ -287,6 +287,9 @@ func TestRunRejectsInvalidConfigBeforeScanning(t *testing.T) {
 		"cops:\n  Custom/Rule:\n    enabled: sometimes\n",
 		"cops:\n  Lint/Typo: 5\n",
 		"cops:\n  lint/osexit:\n    severity: [error]\n",
+		"cops:\n  Lint/OsExit:\n    exclude: lib/\n",
+		"cops:\n  Custom/Rule:\n    exclude: [[lib/]]\n",
+		"cops:\n  Lint/OsExit:\n    exclude: {lib: true}\n",
 	} {
 		t.Run(content, func(t *testing.T) {
 			res := runCLI(t, newFixtureWithConfig(t, content), missingPath)
@@ -311,6 +314,215 @@ func TestRunReportsMissingPath(t *testing.T) {
 			assert.Equal(t, 1, res.code)
 			assert.Empty(t, res.stdout)
 			assert.True(t, strings.HasPrefix(res.stderr, "Error: stat missing-path: "), res.stderr)
+		})
+	}
+}
+
+// Offenses in the exclusion fixture, in addition to the lib.go offenses.
+const (
+	genOsExitOffense      = "gen.go:10 W Lint/OsExit"
+	genWrapErrorsOffense  = "gen.go:14 W Lint/WrapErrors"
+	genCommandExecOffense = "gen.go:19 E Lint/ConstructorCommandExec"
+	testOsExitOffense     = "lib_test.go:6 W Lint/OsExit"
+
+	// optInCops selects the opt-in cops that the fixture violates.
+	optInCops = "  Lint/WrapErrors:\n    enabled: true\n  Lint/ConstructorCommandExec:\n    enabled: true\n"
+)
+
+var allFixtureOffenses = []string{
+	genCommandExecOffense, genOsExitOffense, genWrapErrorsOffense,
+	commandExecOffense, osExitOffense, wrapErrorsOffense, testOsExitOffense,
+}
+
+// newExclusionFixture adds a second package and a test file to the fixture.
+func newExclusionFixture(t *testing.T, content string) string {
+	t.Helper()
+	dir := newFixtureWithConfig(t, content)
+	for name, source := range map[string]string{
+		"gen/gen.go":      strings.Replace(fixtureSource, "package lib", "package gen", 1),
+		"lib/lib_test.go": "package lib\n\nimport \"os\"\n\nfunc exitFromTest() {\n\tos.Exit(3)\n}\n",
+	} {
+		path := filepath.Join(dir, filepath.FromSlash(name))
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(source), 0o644))
+	}
+	return dir
+}
+
+// without returns the fixture offenses except the given ones, sorted.
+func without(excluded ...string) []string {
+	var out []string
+	for _, o := range allFixtureOffenses {
+		if !slices.Contains(excluded, o) {
+			out = append(out, o)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+func TestRunAppliesExclusions(t *testing.T) {
+	for _, tc := range []struct {
+		name, config string
+		cops         int
+		offenses     []string
+	}{
+		{name: "no exclusions", config: "cops:\n" + optInCops, cops: 8, offenses: without()},
+		{
+			name:     "file cop directory",
+			config:   "cops:\n" + optInCops + "  Lint/OsExit:\n    exclude: [gen/]\n",
+			cops:     8,
+			offenses: without(genOsExitOffense),
+		},
+		{
+			name:     "program cop directory",
+			config:   "cops:\n  Lint/WrapErrors:\n    enabled: true\n  Lint/ConstructorCommandExec:\n    enabled: true\n    exclude: [gen]\n",
+			cops:     8,
+			offenses: without(genCommandExecOffense),
+		},
+		{
+			name:     "test files at any depth",
+			config:   "cops:\n" + optInCops + "  Lint/OsExit:\n    exclude: ['**/*_test.go']\n",
+			cops:     8,
+			offenses: without(testOsExitOffense),
+		},
+		{
+			name:     "anchored basename patterns",
+			config:   "cops:\n" + optInCops + "  Lint/OsExit:\n    exclude: ['*_test.go', '*.go', 'lib.go']\n",
+			cops:     8,
+			offenses: without(),
+		},
+		{
+			name:     "exact file",
+			config:   "cops:\n  Lint/WrapErrors:\n    enabled: true\n    exclude: [lib/lib.go]\n  Lint/ConstructorCommandExec:\n    enabled: true\n",
+			cops:     8,
+			offenses: without(wrapErrorsOffense),
+		},
+		{
+			name: "mixed file and program cops",
+			config: `cops:
+  Lint/OsExit:
+    exclude: [lib/]
+  Lint/WrapErrors:
+    enabled: true
+    exclude: [gen/gen.go]
+  Lint/ConstructorCommandExec:
+    enabled: true
+    exclude: [lib/]
+`,
+			cops:     8,
+			offenses: without(osExitOffense, testOsExitOffense, genWrapErrorsOffense, commandExecOffense),
+		},
+		{
+			name:     "severity override with exclusion",
+			config:   "cops:\n  Lint/OsExit:\n    severity: error\n    exclude: [gen/]\n",
+			cops:     6,
+			offenses: []string{"lib.go:10 E Lint/OsExit", "lib_test.go:6 E Lint/OsExit"},
+		},
+		{
+			name:   "exclusion-only entry does not select an opt-in cop",
+			config: "cops:\n  Lint/WrapErrors:\n    exclude: [gen/]\n",
+			cops:   6, offenses: []string{genOsExitOffense, osExitOffense, testOsExitOffense},
+		},
+		{
+			name:     "allowlist",
+			config:   "default_cops: false\ncops:\n  Lint/OsExit:\n    enabled: true\n    exclude: [gen/]\n  Lint/WrapErrors:\n    exclude: ['**']\n",
+			cops:     1,
+			offenses: []string{osExitOffense, testOsExitOffense},
+		},
+		{
+			name: "unknown names",
+			config: "cops:\n" + unknownEntries + optInCops +
+				"  Custom/Excluded:\n    exclude: ['**']\n  lint/OsExit:\n    exclude: ['**']\n  Lint/OSExit:\n    exclude: ['**']\n",
+			cops:     8,
+			offenses: without(),
+		},
+		{
+			name: "every file",
+			config: "cops:\n  Lint/OsExit:\n    exclude: ['**']\n  Lint/WrapErrors:\n    enabled: true\n    exclude: [lib, gen]\n" +
+				"  Lint/ConstructorCommandExec:\n    enabled: true\n    exclude: ['**/*.go']\n",
+			cops: 8,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := runCLI(t, newExclusionFixture(t, tc.config))
+
+			assert.Empty(t, res.stderr)
+			assert.Equal(t, tc.cops, res.copCount(), res.stdout)
+			assert.Equal(t, tc.offenses, res.offenses(), res.stdout)
+			for _, name := range []string{"Custom/Excluded", "lint/OsExit", "Lint/OSExit"} {
+				assert.NotContains(t, res.stdout, name)
+			}
+			if len(tc.offenses) == 0 {
+				assert.Equal(t, 0, res.code)
+				assert.Contains(t, res.stdout, "3 file(s) inspected, no offenses detected")
+			} else {
+				assert.Equal(t, 1, res.code)
+				assert.Contains(t, res.stdout, fmt.Sprintf("3 file(s) inspected, %d offense(s) detected", len(tc.offenses)))
+			}
+		})
+	}
+}
+
+// TestRunExclusionsWithPathArguments checks that relative, absolute, directory,
+// and file arguments give the same exclusions. File cops report the argument
+// spelling of a path, and program cops report absolute paths. Relative
+// directory arguments other than "." are not used: they already skip
+// whole-program analysis before this change.
+func TestRunExclusionsWithPathArguments(t *testing.T) {
+	content := "cops:\n  Lint/OsExit:\n    exclude: [gen/]\n  Lint/WrapErrors:\n    enabled: true\n  Lint/ConstructorCommandExec:\n    enabled: true\n    exclude: [lib/]\n"
+	all := without(genOsExitOffense, commandExecOffense)
+	gen := []string{genCommandExecOffense, genWrapErrorsOffense}
+	for _, tc := range []struct {
+		name     string
+		args     func(dir string) []string
+		offenses []string
+	}{
+		{"default", func(string) []string { return nil }, all},
+		{"dot", func(string) []string { return []string{"."} }, all},
+		{"absolute root", func(dir string) []string { return []string{dir} }, all},
+		{"absolute package", func(dir string) []string { return []string{filepath.Join(dir, "gen")} }, gen},
+		{"relative file", func(string) []string { return []string{filepath.Join("gen", "gen.go")} }, gen},
+		{"relative test file", func(string) []string { return []string{filepath.Join("lib", "lib_test.go")} }, []string{testOsExitOffense}},
+		{"absolute file", func(dir string) []string { return []string{filepath.Join(dir, "lib", "lib.go")} }, []string{osExitOffense, wrapErrorsOffense}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newExclusionFixture(t, content)
+			res := runCLI(t, dir, tc.args(dir)...)
+
+			assert.Empty(t, res.stderr)
+			assert.Equal(t, 1, res.code)
+			want := slices.Clone(tc.offenses)
+			slices.Sort(want)
+			assert.Equal(t, want, res.offenses(), res.stdout)
+		})
+	}
+}
+
+func TestRunRejectsInvalidExclusionsBeforeScanning(t *testing.T) {
+	for _, tc := range []struct{ name, entry, pattern, message string }{
+		{"Lint/OsExit", "", "../lib", `the pattern contains a ".." component`},
+		{"Lint/OsExit", "", "/lib", "the pattern is absolute"},
+		{"Lint/OsExit", "", "", "the pattern is empty"},
+		{"Lint/OsExit", "", "lib**", `"**" must be a complete path component`},
+		{"Lint/OsExit", "", "lib/[", "syntax error in pattern"},
+		{"Lint/OsExit", "", `lib\gen`, `the pattern contains "\"`},
+		{"Lint/OsExit", "", "./", "the pattern names only the configuration directory"},
+		{"Lint/OsExit", "    enabled: false\n", "../lib", `the pattern contains a ".." component`},
+		{"Lint/WrapErrors", "    severity: error\n", "/lib", "the pattern is absolute"},
+		{"Custom/Rule", "    enabled: true\n", "../lib", `the pattern contains a ".." component`},
+		{"lint/osexit", "", "/lib", "the pattern is absolute"},
+	} {
+		t.Run(tc.name+" "+tc.pattern, func(t *testing.T) {
+			content := fmt.Sprintf("cops:\n  %s:\n%s    exclude:\n      - %q\n", tc.name, tc.entry, tc.pattern)
+			res := runCLI(t, newFixtureWithConfig(t, content), missingPath)
+
+			assert.Equal(t, 1, res.code)
+			assert.Empty(t, res.stdout)
+			prefix := fmt.Sprintf("Error: invalid config: cop %q: exclude[0] %q: ", tc.name, tc.pattern)
+			assert.True(t, strings.HasPrefix(res.stderr, prefix), res.stderr)
+			assert.Contains(t, res.stderr, tc.message)
+			assert.Equal(t, 1, strings.Count(res.stderr, "\n"), "one error line")
 		})
 	}
 }

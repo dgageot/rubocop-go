@@ -85,7 +85,23 @@ func (r *Runner) WithProgramCops(cops []prog.Cop) *Runner {
 func (r *Runner) WithSharedProgramLoad() *Runner { r.sharedProgramLoad = true; return r }
 
 // Run inspects all Go files in the given paths and returns the total offense count.
+//
+// Before it reads any file or reports any event, Run prepares the exclude
+// patterns of r.Config with [config.Config.Exclusions]. Only config.Load reads
+// and validates these patterns, so a configuration that config.Load did not
+// return excludes nothing. The working directory at that point resolves
+// relative filenames.
+//
+// A cop does not check a file that its patterns match. That file stays an
+// input of type checking and program loading for all cops. Run also drops each
+// offense that a cop reports in a file that its patterns match, also for
+// whole-program cops. Run keeps the offenses that have no filename.
 func (r *Runner) Run(paths []string) (int, error) {
+	exclusions, err := r.exclusions()
+	if err != nil {
+		return 0, err
+	}
+
 	files, err := collectGoFiles(paths)
 	if err != nil {
 		return 0, err
@@ -113,7 +129,7 @@ func (r *Runner) Run(paths []string) (int, error) {
 			info, pkg := typeCheckWithImporter(fset, dir, parsed, imports.resolve(dir, parsed))
 
 			for i, pf := range parsed {
-				fileOffenses := r.runCops(fset, pf, info, pkg, sharedFiles)
+				fileOffenses := r.runCops(fset, pf, info, pkg, sharedFiles, exclusions)
 				filesInspected++
 				r.Reporter.FileFinished(parsedPaths[i], fileOffenses)
 				allOffenses = append(allOffenses, fileOffenses...)
@@ -128,7 +144,7 @@ func (r *Runner) Run(paths []string) (int, error) {
 				continue
 			}
 
-			fileOffenses := r.runCops(fset, f, nil, nil, sharedFiles)
+			fileOffenses := r.runCops(fset, f, nil, nil, sharedFiles, exclusions)
 			filesInspected++
 			r.Reporter.FileFinished(path, fileOffenses)
 			allOffenses = append(allOffenses, fileOffenses...)
@@ -138,7 +154,7 @@ func (r *Runner) Run(paths []string) (int, error) {
 	// Whole-program cops run once over the loaded program rather than once
 	// per file. They are independent of the file loop above.
 	if len(r.ProgramCops) > 0 {
-		programOffenses := r.runProgramCops(paths)
+		programOffenses := r.runProgramCops(paths, exclusions)
 		allOffenses = append(allOffenses, programOffenses...)
 	}
 
@@ -158,12 +174,27 @@ func (r *Runner) Run(paths []string) (int, error) {
 	return len(allOffenses), nil
 }
 
+// exclusions prepares the exclude patterns once for a run.
+func (r *Runner) exclusions() (*config.Exclusions, error) {
+	wd, wdErr := os.Getwd()
+	exclusions, err := r.Config.Exclusions(wd)
+	if err != nil && wdErr != nil {
+		return nil, fmt.Errorf("%w: %w", err, wdErr)
+	}
+	return exclusions, err
+}
+
 // runCops invokes every enabled cop against the file and returns the merged offense list.
-func (r *Runner) runCops(fset *token.FileSet, file *ast.File, info *types.Info, pkg *types.Package, sharedFiles *sharedFileLoader) []cop.Offense {
+func (r *Runner) runCops(fset *token.FileSet, file *ast.File, info *types.Info, pkg *types.Package, sharedFiles *sharedFileLoader, exclusions *config.Exclusions) []cop.Offense {
 	sup := cop.ScanSuppressions(fset, file)
+	// Use the physical filename, as cop.Pass.Filename does, not a //line name.
+	filename := fset.PositionFor(file.Package, false).Filename
 
 	var offenses []cop.Offense
 	for _, c := range r.Cops {
+		if exclusions.Excludes(c.Name(), filename) {
+			continue
+		}
 		p := &cop.Pass{Cop: c, FileSet: fset, File: file, Info: info, Package: pkg}
 		if sharedFiles != nil {
 			p.SetTypedFiles(func() ([]*cop.Pass, error) {
@@ -179,6 +210,10 @@ func (r *Runner) runCops(fset *token.FileSet, file *ast.File, info *types.Info, 
 		c.Check(p)
 		for _, o := range p.Offenses() {
 			if sup.Suppresses(c.Name(), o.Pos.Line) {
+				continue
+			}
+			// A cop can report an offense in a file other than the checked file.
+			if exclusions.Excludes(c.Name(), o.Pos.Filename) {
 				continue
 			}
 			offenses = append(offenses, o)
@@ -205,11 +240,13 @@ func (r *Runner) parseFiles(fset *token.FileSet, paths []string) ([]*ast.File, [
 }
 
 // runProgramCops loads the whole program once and runs every registered
-// whole-program cop against it. Offenses are passed through the same
-// suppression machinery as file cops, resolved per-file from the offense's
-// own position. A load failure is reported as a diagnostic line and yields
-// no offenses — whole-program analysis is best-effort, never fatal.
-func (r *Runner) runProgramCops(paths []string) []cop.Offense {
+// whole-program cop against it. Excluded files stay in the program. Only the
+// offenses that a cop reports in a file that it excludes are dropped. The
+// other offenses are passed through the same suppression machinery as file
+// cops, resolved per-file from the offense's own position. A load failure is
+// reported as a diagnostic line and yields no offenses — whole-program
+// analysis is best-effort, never fatal.
+func (r *Runner) runProgramCops(paths []string, exclusions *config.Exclusions) []cop.Offense {
 	patterns := loadPatterns(paths)
 	var program *prog.Program
 	var err error
@@ -230,7 +267,11 @@ func (r *Runner) runProgramCops(paths []string) []cop.Offense {
 			p.SeverityOverride = &sev
 		}
 		c.Check(p)
-		raw = append(raw, p.Offenses()...)
+		for _, o := range p.Offenses() {
+			if !exclusions.Excludes(c.Name(), o.Pos.Filename) {
+				raw = append(raw, o)
+			}
+		}
 	}
 
 	return r.filterSuppressed(program.Fset, raw)

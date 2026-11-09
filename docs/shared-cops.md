@@ -71,9 +71,11 @@ cops that you enable. The CLI ignores unknown names without a message, so a
 misspelled or wrong-case name selects nothing. See the
 [configuration rules](../README.md#configuration).
 
-CLI selection does not accept constructor options such as `cop.WithScope`, and
-it cannot exclude paths. Use `//rubocop:disable` comments, or select the cop
-with a named constructor in an embedded runner.
+CLI selection does not accept constructor options such as `cop.WithScope`. To
+skip paths for one cop, add an `exclude` list to its entry. See
+[excluding paths](../README.md#excluding-paths). You can also use
+`//rubocop:disable` comments, or select the cop with a named constructor in an
+embedded runner.
 
 ## Embedding
 
@@ -122,8 +124,9 @@ check := cops.NewLintURLClone(
 )
 ```
 
-Project-specific exclusions belong in the consumer. No configuration directories
-or module paths are implicitly exempt. Several modernization cops skip generated
+Project-specific exclusions belong in the consumer: use per-cop `exclude` lists
+in a file that `config.Load` reads, or `cop.WithScope`. No configuration
+directories or module paths are implicitly exempt. Several modernization cops skip generated
 code; `FieldsSeq`, `FieldsSeqLookup`, and `SplitTrimJoin` retain their broader coverage. Add a scope
 if your project excludes generated files from those checks too.
 
