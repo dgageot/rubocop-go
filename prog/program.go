@@ -81,9 +81,9 @@ const loadMode = packages.NeedName |
 // go tool accepts, e.g. "./...") and lowers them to SSA with a call graph.
 //
 // Load tolerates partial failures the way the rest of rubocop-go does: a
-// package that does not type-check contributes whatever information was
-// recovered. Load only returns an error when nothing at all could be
-// loaded, since a cop has nothing to inspect in that case.
+// package that does not type-check retains its syntax and partial type
+// information, but is not lowered to SSA. Load only returns an error when
+// nothing at all could be loaded, since a cop has nothing to inspect in that case.
 func Load(patterns ...string) (*Program, error) {
 	return LoadDir("", patterns...)
 }
@@ -171,7 +171,9 @@ func buildProgram(fset *token.FileSet, pkgs []*packages.Package, patterns []stri
 			return false
 		}
 		created[pkg.Types] = true
-		if isInitialPackage(pkgs, pkg) {
+		// SSA requires complete type information, including that of dependencies.
+		// IllTyped propagates dependency errors even when pkg.Errors is empty.
+		if isInitialPackage(pkgs, pkg) && !pkg.IllTyped && len(pkg.Errors) == 0 && pkg.TypesInfo != nil {
 			ssaProg.CreatePackage(pkg.Types, pkg.Syntax, pkg.TypesInfo, true)
 		} else {
 			ssaProg.CreatePackage(pkg.Types, nil, nil, true)
@@ -181,7 +183,9 @@ func buildProgram(fset *token.FileSet, pkgs []*packages.Package, patterns []stri
 
 	ssaPkgs := make([]*ssa.Package, len(pkgs))
 	for i, pkg := range pkgs {
-		ssaPkgs[i] = ssaProg.Package(pkg.Types)
+		if pkg.Types != nil && !pkg.IllTyped && len(pkg.Errors) == 0 && pkg.TypesInfo != nil {
+			ssaPkgs[i] = ssaProg.Package(pkg.Types)
+		}
 	}
 	if len(ssaPkgs) == 0 {
 		return nil, fmt.Errorf("building SSA: no buildable packages in %v", patterns)
