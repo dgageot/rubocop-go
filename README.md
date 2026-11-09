@@ -64,6 +64,24 @@ go run . .
 go run . ./pkg ./cmd
 ```
 
+## Development checks
+
+CI runs `go test ./...` and uses rubocop-go to lint its own code. The repository's
+`.rubocop-go.yml` enables all 42 shared rules alongside the default cops.
+Run the same self-check from the repository root:
+
+```sh
+go run . "$PWD"/*.go \
+  "$PWD"/{config,cop,cops,coptest,prog,runner} \
+  "$PWD"/examples/{clean,embed}
+```
+
+The self-check excludes `examples/violations`, which deliberately demonstrates
+bad code. Absolute paths also ensure the program loader resolves local packages.
+Rules requiring a newer Go version than the target module remain skipped.
+CI fails if whole-program analysis cannot run, rather than accepting a partial
+self-check.
+
 ## Configuration
 
 The CLI reads `.rubocop-go.yml` from the current directory. Without this file,

@@ -7,3 +7,89 @@ cops:
     enabled: true
   Lint/ContextConnectivity:
     enabled: true
+
+  # Shared rules used to lint rubocop-go itself.
+  Lint/BenchmarkLoop:
+    enabled: true
+  Lint/CancellationLoop:
+    enabled: true
+  Lint/CancellationSafeResultSend:
+    enabled: true
+  Lint/ChannelStateCheck:
+    enabled: true
+  Lint/ClosedChannelLoop:
+    enabled: true
+  Lint/ConstructorCommandExec:
+    enabled: true
+  Lint/ConstructorNetworkIO:
+    enabled: true
+  Lint/ConstructorPurity:
+    enabled: true
+  Lint/ContextFirstParameter:
+    enabled: true
+  Lint/CutPrefix:
+    enabled: true
+  Lint/CutSuffix:
+    enabled: true
+  Lint/DeferMutexUnlock:
+    enabled: true
+  Lint/ErrorStringMatching:
+    enabled: true
+  Lint/ErrorsAsType:
+    enabled: true
+  Lint/FieldsSeq:
+    enabled: true
+  Lint/FieldsSeqLookup:
+    enabled: true
+  Lint/HTTPRequestWithContext:
+    enabled: true
+  Lint/HTTPTestRequestWithContext:
+    enabled: true
+  Lint/JSONMarshalWrite:
+    enabled: true
+  Lint/MapsClone:
+    enabled: true
+  Lint/MapsCopy:
+    enabled: true
+  Lint/NewExpr:
+    enabled: true
+  Lint/NoContextField:
+    enabled: true
+  Lint/NoFatalOutsideMain:
+    enabled: true
+  Lint/NoStdoutInLibraries:
+    enabled: true
+  Lint/NonblockingChannelReplacement:
+    enabled: true
+  Lint/PointerHelper:
+    enabled: true
+  Lint/ReflectFields:
+    enabled: true
+  Lint/SlicesClone:
+    enabled: true
+  Lint/SlicesConcat:
+    enabled: true
+  Lint/SlicesContains:
+    enabled: true
+  Lint/SlicesEqual:
+    enabled: true
+  Lint/SlogContextual:
+    enabled: true
+  Lint/SortStableFunc:
+    enabled: true
+  Lint/SortedMapKeys:
+    enabled: true
+  Lint/SplitSeq:
+    enabled: true
+  Lint/SplitTrimJoin:
+    enabled: true
+  Lint/StdlibUUID:
+    enabled: true
+  Lint/StreamCloseSafety:
+    enabled: true
+  Lint/URLClone:
+    enabled: true
+  Lint/WaitGroupGo:
+    enabled: true
+  Lint/WrapErrors:
+    enabled: true

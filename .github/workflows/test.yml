@@ -25,3 +25,17 @@ jobs:
 
       - name: Run tests
         run: go test ./...
+
+      - name: Run rubocop-go on itself
+        shell: bash
+        run: |
+          # Keep intentional violations out of the self-check. Absolute paths
+          # also make every directory unambiguous to the program loader.
+          go run . "$PWD"/*.go \
+            "$PWD"/{config,cop,cops,coptest,prog,runner} \
+            "$PWD"/examples/{clean,embed} \
+            2>&1 | tee "$RUNNER_TEMP/rubocop-go.log"
+          if grep -Fq 'whole-program analysis skipped:' "$RUNNER_TEMP/rubocop-go.log"; then
+            echo 'Self-check failed: whole-program analysis did not run.' >&2
+            exit 1
+          fi
