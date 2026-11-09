@@ -629,6 +629,21 @@ func TestSelectCops(t *testing.T) {
 	})
 }
 
+func TestRepositoryConfigEnablesAllCops(t *testing.T) {
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+
+	known := make(map[string]bool)
+	for _, entry := range cops.Catalog() {
+		known[entry.Name] = true
+		assert.True(t, cfg.IsEnabledWithDefault(entry.Name, entry.Default),
+			"repository self-check must enable %s", entry.Name)
+	}
+	for name := range cfg.Cops {
+		assert.True(t, known[name], "unknown cop in repository configuration: %s", name)
+	}
+}
+
 func TestSelectCopsUsesCatalogOrder(t *testing.T) {
 	var wantFiles, wantPrograms []string
 	for _, e := range cops.Catalog() {

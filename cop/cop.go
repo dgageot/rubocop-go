@@ -485,5 +485,5 @@ func Register(c Cop) {
 func All() []Cop {
 	mu.Lock()
 	defer mu.Unlock()
-	return append([]Cop(nil), registry...)
+	return slices.Clone(registry)
 }

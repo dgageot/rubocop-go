@@ -117,10 +117,10 @@ func NewJSONReporter(w io.Writer) *JSONReporter {
 }
 
 // Start is a no-op.
-func (*JSONReporter) Start(int) {}
+func (*JSONReporter) Start(int) {} //rubocop:disable Style/EmptyFunc // JSON is emitted only at Finish.
 
 // FileFinished is a no-op.
-func (*JSONReporter) FileFinished(string, []cop.Offense) {}
+func (*JSONReporter) FileFinished(string, []cop.Offense) {} //rubocop:disable Style/EmptyFunc // JSON is emitted only at Finish.
 
 // Finish writes a single JSON object describing the run.
 func (r *JSONReporter) Finish(allOffenses []cop.Offense, filesInspected int) {
