@@ -22,6 +22,9 @@ var LintOsExit = cop.New(cop.Meta{
 
 ## Built-in cops
 
+The bundled CLI runs these five file cops and the whole-program cop below by
+default. `cops.All()` and `cops.AllProgram()` return the same default cops.
+
 | Cop | Description |
 |-----|-------------|
 | `Lint/OsExit` | Detects direct calls to `os.Exit` |
@@ -32,10 +35,13 @@ var LintOsExit = cop.New(cop.Meta{
 
 ### Shared opt-in cops
 
-42 additional cops are available through named constructors for context usage,
-logging, library output, errors, constructor lifecycles, stream synchronization,
-channel safety, and Go modernization.
-They are deliberately **not** included in `All()` or `AllProgram()`.
+42 additional cops cover context usage, logging, library output, errors,
+constructor lifecycles, stream synchronization, channel safety, and Go
+modernization.
+They are deliberately **not** included in `All()` or `AllProgram()`, and the
+CLI does not run them by default.
+Select them by name in [`.rubocop-go.yml`](#configuration), or use their named
+constructors in an embedded runner.
 See the [shared cop catalog](docs/shared-cops.md) for brief descriptions,
 examples, minimum Go versions, and limitations.
 
@@ -60,17 +66,84 @@ go run . ./pkg ./cmd
 
 ## Configuration
 
-Cops are configured via `.rubocop-go.yml`:
+The CLI reads `.rubocop-go.yml` from the current directory. Without this file,
+the CLI runs the six default cops.
+
+The `cops` map accepts the name of every shipped cop. Each entry can set these
+keys:
+
+- `enabled`: `true` runs the cop, and `false` disables it.
+- `severity`: `convention`, `warning`, or `error` replaces the reported
+  severity. The CLI ignores other values.
 
 ```yaml
 cops:
   Lint/OsExit:
-    enabled: true
-  Style/ErrorNaming:
-    enabled: true
+    severity: error   # Default cop with a severity override
   Style/EmptyFunc:
-    enabled: true
+    enabled: false    # Disabled default cop
+  Lint/WrapErrors:
+    enabled: true     # Selected shared opt-in cop
 ```
+
+Set `default_cops: false` to make the `cops` map an allowlist. The CLI then runs
+only the cops that have `enabled: true`:
+
+```yaml
+default_cops: false
+
+cops:
+  Lint/NoStdoutInLibraries:
+    enabled: true
+  Lint/NoFatalOutsideMain:
+    enabled: true
+  Lint/OsExit:
+    enabled: true
+    severity: error
+```
+
+The CLI applies these rules to each shipped cop, in this order:
+
+1. An explicit `enabled` value wins.
+2. Otherwise, `default_cops: false` disables the cop.
+3. Otherwise, the cop runs only if it is a default cop.
+
+An omitted `default_cops` value behaves like `true`. This value keeps the six
+default cops. It does not enable the shared opt-in cops. An entry without
+`enabled`, such as a severity-only entry, does not select an opt-in cop. An
+allowlist without enabled cops runs zero cops.
+
+| Configuration | Cops that the CLI runs |
+| --- | --- |
+| No file, an empty file, or `default_cops: true` | The six default cops |
+| A default cop with `enabled: false` | The other default cops |
+| An opt-in cop with `enabled: true` | The default cops and that cop |
+| An opt-in cop with only `severity` | The default cops |
+| `default_cops: false` | Only the cops with `enabled: true` |
+
+The CLI ignores names that are not shipped cops, as earlier versions did. Names
+are case-sensitive, so `lint/osexit` is also an unknown name. An entry with an
+unknown name does not select or disable a cop, and it does not change a
+severity. The CLI does not report unknown names, and they do not change the
+exit status. With `default_cops: false`, a file that contains only unknown
+names runs zero cops.
+
+Because of this behavior, one file can also configure cops that only a custom
+embedded runner supplies. The tradeoff is that the CLI does not find typos. An
+entry with a misspelled name has no effect. It does not disable, select, or
+change the severity of the intended cop. Copy names from the
+[built-in cops](#built-in-cops) table or the
+[shared cop catalog](docs/shared-cops.md). The first output line,
+`Inspecting Go files with N cop(s)`, shows the number of cops that the CLI
+runs.
+
+The CLI exits with status 1 for invalid YAML or a value of the wrong type,
+also in an entry with an unknown name. As before, it exits with status 1 when
+the analysis finds offenses.
+
+The configuration selects complete cops. It cannot restrict a cop to some paths
+or pass constructor options such as `cop.WithScope`. Use `//rubocop:disable`
+comments, or build an embedded runner with named constructors.
 
 ## Writing a custom cop
 
@@ -118,6 +191,39 @@ func main() {
 ```
 
 See `examples/embed` for a runnable version of this pattern.
+
+### Configuration in embedded runners
+
+`runner.New` and `WithProgramCops` filter the cops that you supply with
+`Config.IsEnabled`. The runner does not use the CLI catalog. It accepts any cop
+name, and it ignores configured names that do not match a supplied cop. A
+supplied cop runs unless the configuration disables it. With
+`default_cops: false`, only supplied cops with `enabled: true` run.
+`config.DefaultConfig()` and a zero-value `config.Config` run every supplied
+cop.
+
+To select shipped cops the way the CLI does, use `cops.Catalog()` with
+`Config.IsEnabledWithDefault`. Then append your own cops:
+
+```go
+var files []cop.Cop
+var programs []prog.Cop
+for _, e := range cops.Catalog() {
+    if !cfg.IsEnabledWithDefault(e.Name, e.Default) {
+        continue
+    }
+    if e.File != nil {
+        files = append(files, e.File())
+    } else {
+        programs = append(programs, e.Program())
+    }
+}
+files = append(files, MyCop)
+r := runner.New(files, cfg, os.Stdout).WithProgramCops(programs)
+```
+
+Catalog constructors take no options. Call a named constructor to add options
+such as `cop.WithScope`.
 
 ### Selecting execution modes
 
@@ -208,21 +314,27 @@ The bundled scope helpers are:
 ### Plugged into the bundled CLI
 
 If you want your cop to ship inside the bundled `rubocop-go` CLI, add it to
-the `cops/` package as a `NewMyCop()` constructor and append it to the
-slice returned by `cops.All()` in `cops/register.go` (or `cops.AllProgram()`
-for whole-program cops):
+the `cops/` package as a `NewMyCop()` constructor. Then add one entry, in name
+order, to the slice that `cops.Catalog()` returns in `cops/register.go`:
 
 ```go
-func All() []cop.Cop {
-    return []cop.Cop{
-        // ... existing cops ...
-        NewMyCop(),
+func Catalog() []Entry {
+    return []Entry{
+        // ... existing entries ...
+        {Name: "Style/MyCop", File: func() cop.Cop { return NewMyCop() }},
     }
 }
 ```
 
-`main.go` runs `cops.All()` (and `cops.AllProgram()`), so it picks the cop
-up automatically.
+Use `Program: func() prog.Cop { ... }` for a whole-program cop. Register each
+name once, in its canonical execution mode. An alternate `*File` constructor
+for custom adapters does not get its own entry. Tests check that every other
+exported constructor has exactly one entry.
+
+Users select the new cop with `enabled: true` in `.rubocop-go.yml`. Set
+`Default: true` only if every CLI user must run the cop without configuration.
+`cops.All()` and `cops.AllProgram()` return the default entries, so a default
+cop also reaches embedders that call them.
 
 ### Type-aware cops
 
