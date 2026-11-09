@@ -77,10 +77,11 @@ func isConstructorName(name string) bool {
 	if name == "New" {
 		return true
 	}
-	if !strings.HasPrefix(name, "New") {
+	suffix, ok := strings.CutPrefix(name, "New")
+	if !ok {
 		return false
 	}
-	r, _ := utf8.DecodeRuneInString(name[len("New"):])
+	r, _ := utf8.DecodeRuneInString(suffix)
 	return unicode.IsUpper(r)
 }
 
