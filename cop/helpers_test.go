@@ -2,6 +2,7 @@ package cop_test
 
 import (
 	"go/ast"
+	"go/token"
 	"reflect"
 	"strings"
 	"testing"
@@ -257,4 +258,17 @@ func plain()                {}
 	require.Len(t, infos, 2)
 	assert.Equal(t, cop.ReceiverInfo{Name: "", TypeName: "T", IsPointer: false}, infos[0])
 	assert.Equal(t, cop.ReceiverInfo{Name: "t", TypeName: "T", IsPointer: true}, infos[1])
+}
+
+func TestImportPath(t *testing.T) {
+	var paths []string
+	probe := newProbe(func(p *cop.Pass) {
+		p.ForEachImport(func(imp *ast.ImportSpec) {
+			paths = append(paths, cop.ImportPath(imp))
+		})
+	})
+	coptest.Run(t, probe, "package x\n\nimport (\n\t\"fmt\"\n\tprocess `os`\n\t\"net/\\x68ttp\"\n)\n")
+
+	assert.Equal(t, []string{"fmt", "os", "net/http"}, paths)
+	assert.Empty(t, cop.ImportPath(&ast.ImportSpec{Path: &ast.BasicLit{Kind: token.STRING, Value: "fmt"}}))
 }
