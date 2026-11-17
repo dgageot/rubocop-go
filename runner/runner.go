@@ -331,7 +331,7 @@ func loadPatterns(paths []string) []string {
 }
 
 func packagePattern(path string, recursive bool) string {
-	clean := filepath.Clean(path)
+	clean := filepath.ToSlash(filepath.Clean(path))
 	if clean == "." {
 		if recursive {
 			return "./..."
@@ -342,9 +342,11 @@ func packagePattern(path string, recursive bool) string {
 		clean = "./" + clean
 	}
 	if recursive {
-		return filepath.ToSlash(filepath.Join(clean, "..."))
+		// filepath.Join would clean away the leading "./". Without it,
+		// go/packages reads a relative directory as an import path.
+		return strings.TrimSuffix(clean, "/") + "/..."
 	}
-	return filepath.ToSlash(clean)
+	return clean
 }
 
 // typeCheck performs type-checking on a set of parsed files from the same directory.

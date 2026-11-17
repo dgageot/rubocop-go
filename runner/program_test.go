@@ -71,14 +71,49 @@ func main() {
 
 func runProgramCops(t *testing.T, dir string) int {
 	t.Helper()
+	return runProgramCopsOn(t, dir, ".")
+}
+
+func runProgramCopsOn(t *testing.T, dir string, paths ...string) int {
+	t.Helper()
 	t.Chdir(dir)
 
 	var buf bytes.Buffer
 	r := runner.New(nil, config.DefaultConfig(), &buf).
 		WithProgramCops(cops.AllProgram())
-	count, err := r.Run([]string{"."})
+	count, err := r.Run(paths)
 	require.NoError(t, err)
 	return count
+}
+
+// TestRunner_ProgramCop_RelativePaths checks that whole-program cops load the
+// packages of a relative directory or file argument.
+func TestRunner_ProgramCop_RelativePaths(t *testing.T) {
+	dir := t.TempDir()
+	writeModule(t, dir, map[string]string{
+		"go.mod": "module example.test\n\ngo 1.22\n",
+		"cmd/tool/main.go": `package main
+
+import "context"
+
+func use(ctx context.Context) { _ = ctx }
+
+func detached() {
+	use(context.Background())
+}
+
+func main() {
+	use(context.Background())
+	detached()
+}
+`,
+	})
+
+	for _, path := range []string{"cmd", "./cmd", "cmd/tool", "./cmd/tool/", "cmd/tool/main.go"} {
+		t.Run(path, func(t *testing.T) {
+			assert.Equal(t, 1, runProgramCopsOn(t, dir, path), "expected one detached-context offense")
+		})
+	}
 }
 
 func writeModule(t *testing.T, dir string, files map[string]string) {
