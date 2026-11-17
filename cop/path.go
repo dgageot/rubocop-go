@@ -1,6 +1,8 @@
 package cop
 
 import (
+	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -18,7 +20,9 @@ func (p *Pass) FileMatches(repoRelPath string) bool {
 }
 
 // FileUnder reports whether the file under inspection lives anywhere inside
-// the given repository-relative directory.
+// the given repository-relative directory. The directory matches at any
+// depth of the filename: "pkg/tui" also matches "vendor/x/pkg/tui/view.go".
+// Use [Pass.ModuleRelPath] to match one directory of a module.
 //
 //	if !p.FileUnder("pkg/tui") { return }
 func (p *Pass) FileUnder(repoRelDir string) bool {
@@ -50,4 +54,63 @@ func (p *Pass) PathSegment(parent string) (string, bool) {
 		return "", false
 	}
 	return seg, true
+}
+
+// ModuleRelPath returns the slash-separated path of the file under inspection
+// relative to the root of its module: the nearest directory, at or above the
+// file, that holds a go.mod. The second result is false when the file is in
+// no module.
+//
+// Unlike the filename, the result is the same wherever the runner starts and
+// however its paths are spelled, so it is a stable anchor for a rule about
+// one part of a module. A file of a nested module is relative to that module.
+//
+// The lookup reads the file system on each call. It resolves a relative
+// filename from the working directory and does not resolve symbolic links in
+// the filename.
+//
+//	rel, ok := p.ModuleRelPath() // "pkg/runtime/event.go", true
+func (p *Pass) ModuleRelPath() (string, bool) {
+	if p.hasModuleRelPath {
+		return p.moduleRelPath, true
+	}
+	return relToModule(p.Filename())
+}
+
+// SetModuleRelPath states the module-relative path of a file that is not on
+// disk, such as the synthetic source of a test. Set it before publishing the
+// pass. See [Pass.ModuleRelPath].
+func (p *Pass) SetModuleRelPath(rel string) {
+	p.moduleRelPath = cleanModulePath(rel)
+	p.hasModuleRelPath = true
+}
+
+func cleanModulePath(rel string) string {
+	return path.Clean(filepath.ToSlash(rel))
+}
+
+// relToModule returns filename relative to the nearest directory, at or above
+// it, that holds a go.mod.
+func relToModule(filename string) (string, bool) {
+	if filename == "" {
+		return "", false
+	}
+	abs, err := filepath.Abs(filename)
+	if err != nil {
+		return "", false
+	}
+	for dir := filepath.Dir(abs); ; {
+		if info, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil && info.Mode().IsRegular() {
+			rel, err := filepath.Rel(dir, abs)
+			if err != nil {
+				return "", false
+			}
+			return filepath.ToSlash(rel), true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
 }

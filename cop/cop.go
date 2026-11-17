@@ -106,6 +106,10 @@ type Pass struct {
 
 	offenses   []Offense
 	typedFiles func() ([]*Pass, error)
+
+	// moduleRelPath is the path given to SetModuleRelPath, if hasModuleRelPath.
+	moduleRelPath    string
+	hasModuleRelPath bool
 }
 
 // TypedFiles returns read-only typed views of this file. The runner supplies
@@ -144,6 +148,7 @@ func (p *Pass) TypedFiles() ([]*Pass, error) {
 	return []*Pass{{
 		Cop: p.Cop, FileSet: p.FileSet, File: p.File,
 		Info: info, Package: pkg, SeverityOverride: p.SeverityOverride,
+		moduleRelPath: p.moduleRelPath, hasModuleRelPath: p.hasModuleRelPath,
 	}}, nil
 }
 
