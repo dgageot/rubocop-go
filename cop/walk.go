@@ -402,7 +402,12 @@ func forEachStringConst(file *ast.File, pred func(name string) bool, fn func(nam
 	}
 }
 
-// ImportPath returns the unquoted import path of an *ast.ImportSpec.
+// ImportPath returns the import path of an *ast.ImportSpec, or "" when its
+// literal is malformed.
 func ImportPath(imp *ast.ImportSpec) string {
-	return strings.Trim(imp.Path.Value, `"`)
+	path, err := strconv.Unquote(imp.Path.Value)
+	if err != nil {
+		return ""
+	}
+	return path
 }

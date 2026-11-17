@@ -1,5 +1,7 @@
 package cop
 
+import "strings"
+
 // CheckScope is a predicate over a Pass that decides whether a cop's Check
 // function should run on the file. Returning false skips the file. Use it
 // as the Scope of a [Func] (or, more generally, as the InScope hook of any
@@ -8,7 +10,8 @@ package cop
 // The package provides a small set of building blocks that compose with
 // And, Or, and Not. Most cops need exactly one of OnlyFile, UnderDir, or
 // InPathSegment; keep custom predicates rare so that scope rules stay
-// declarative and skim-readable.
+// declarative and skim-readable. OnlyModuleFile and UnderModuleDir are the
+// counterparts of OnlyFile and UnderDir that are anchored at the module root.
 type CheckScope = func(*Pass) bool
 
 // OnlyFile matches when the file under inspection has the given
@@ -20,11 +23,42 @@ func OnlyFile(repoRelPath string) CheckScope {
 }
 
 // UnderDir matches when the file lives anywhere inside the given
-// repository-relative directory. See [Pass.FileUnder].
+// repository-relative directory. The directory matches at any depth of the
+// filename, see [Pass.FileUnder]. Use [UnderModuleDir] to match one directory
+// of a module.
 //
 //	Scope: cop.UnderDir("pkg/tui"),
 func UnderDir(repoRelDir string) CheckScope {
 	return func(p *Pass) bool { return p.FileUnder(repoRelDir) }
+}
+
+// OnlyModuleFile matches the file at the given slash-separated path, relative
+// to the root of its module. Unlike [OnlyFile], it does not match a file with
+// the same path deeper in the tree. A file outside a module never matches.
+// See [Pass.ModuleRelPath].
+//
+//	Scope: cop.OnlyModuleFile("main.go"),
+func OnlyModuleFile(moduleRelFile string) CheckScope {
+	file := cleanModulePath(moduleRelFile)
+	return func(p *Pass) bool {
+		rel, ok := p.ModuleRelPath()
+		return ok && rel == file
+	}
+}
+
+// UnderModuleDir matches when the file lives inside the given slash-separated
+// directory, relative to the root of its module. "." or "" is the whole
+// module. Unlike [UnderDir], it does not match a directory with the same path
+// deeper in the tree, and the result is the same wherever the runner starts.
+// A file outside a module never matches. See [Pass.ModuleRelPath].
+//
+//	Scope: cop.UnderModuleDir("internal/api"),
+func UnderModuleDir(moduleRelDir string) CheckScope {
+	dir := cleanModulePath(moduleRelDir)
+	return func(p *Pass) bool {
+		rel, ok := p.ModuleRelPath()
+		return ok && (dir == "." || strings.HasPrefix(rel, dir+"/"))
+	}
 }
 
 // InPathSegment matches when parent appears in the file's path and the

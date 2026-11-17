@@ -29,3 +29,16 @@ func TestLintOsExitRegressions(t *testing.T) {
 		})
 	}
 }
+
+// Without type information, the cop finds the package through the import.
+func TestLintOsExitUntypedImports(t *testing.T) {
+	for _, tc := range []struct{ name, imported string }{
+		{"interpreted string", `"os"`},
+		{"raw string", "`os`"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "package p\n\nimport " + tc.imported + "\n\nfunc stop() { os.Exit(1) }\n"
+			assert.Len(t, coptest.Run(t, cops.NewLintOsExit(), src), 1)
+		})
+	}
+}

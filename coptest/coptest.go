@@ -32,6 +32,8 @@ func Run(t *testing.T, c cop.Cop, src string) []cop.Offense {
 
 // RunNamed is like Run but lets you choose the synthetic filename. Useful
 // when a cop's logic depends on the path (for instance, package layout).
+// A relative filename is also the file's path in its module, as
+// [cop.Pass.ModuleRelPath] reports it.
 //
 // Cops that implement [cop.Scoped] are honored — RunNamed returns no
 // offenses when InScope reports false, mirroring the production runner.
@@ -45,6 +47,9 @@ func RunNamed(t *testing.T, c cop.Cop, filename, src string) []cop.Offense {
 	}
 
 	p := &cop.Pass{Cop: c, FileSet: fset, File: file}
+	if !filepath.IsAbs(filename) {
+		p.SetModuleRelPath(filename)
+	}
 	if s, ok := c.(cop.Scoped); ok && !s.InScope(p) {
 		return nil
 	}

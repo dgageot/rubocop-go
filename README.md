@@ -421,11 +421,25 @@ The bundled scope helpers are:
 
 | Helper | Matches |
 |--------|---------|
-| `cop.OnlyFile("pkg/runtime/event.go")` | one specific file |
-| `cop.UnderDir("pkg/tui")` | every file under a directory |
+| `cop.OnlyFile("pkg/runtime/event.go")` | a file with this path, at any depth |
+| `cop.UnderDir("pkg/tui")` | every file under a directory with this path, at any depth |
+| `cop.OnlyModuleFile("main.go")` | the file at this path from the module root |
+| `cop.UnderModuleDir("pkg/tui")` | every file under this directory of the module |
 | `cop.InPathSegment("pkg/config", pred)` | files whose path contains `parent/<seg>/...` and `pred(seg)` is true |
 | `cop.NotBlackBoxTest()` | files whose package is not `<dir>_test` |
 | `cop.And(a, b)` / `cop.Or(a, b)` / `cop.Not(a)` | logical composition |
+
+`OnlyFile` matches its path at the end of the filename that the runner sees,
+and `UnderDir` anywhere in it. `UnderDir("lib")` therefore also matches
+`tests/lib/x.go`, and it misses the files of `lib` when the runner starts
+inside `lib` with the path `.`.
+
+`OnlyModuleFile` and `UnderModuleDir` compare the path from the module root:
+the nearest directory, at or above the file, that holds a `go.mod`. The result
+is the same wherever the runner starts and however its paths are spelled. A
+file of a nested module is relative to that module, and a file outside a
+module never matches. `Pass.ModuleRelPath` returns the same path inside a
+check.
 
 ### Plugged into the bundled CLI
 
@@ -543,8 +557,8 @@ helpers for the recurring shapes:
   `Pass.StructType(name)`, `Pass.FirstMethodCall(name)`,
   `Pass.PointerReceiverMethods(name)` / `Pass.ValueReceiverMethods(name)`.
 - **Path scope** — `Pass.FileMatches`, `FileUnder`, `PathSegment`,
-  `IsTestFile`, `IsBlackBoxTest` (plus the `cop.OnlyFile`/`UnderDir`/...
-  scope helpers above).
+  `ModuleRelPath`, `IsTestFile`, `IsBlackBoxTest` (plus the
+  `cop.OnlyFile`/`UnderDir`/... scope helpers above).
 - **Cross-file** — `Pass.ParseSibling(rel)` to read a sibling file,
   `Pass.ParseDir(rel, opts)` to scan a directory.
 - **Diagnostics** — `Pass.Report(node, message)`,
